@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:name=".VsCodeApplication"
+        android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:resizeableActivity="true"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.DeXCode"
+        android:usesCleartextTraffic="true">
+
+        <!-- Android 15+ can expose a system-level New Window affordance. -->
+        <property
+            android:name="android.window.PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI"
+            android:value="true" />
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|density|fontScale|layoutDirection|touchscreen|uiMode"
+            android:documentLaunchMode="always"
+            android:exported="true"
+            android:launchMode="standard"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".CodeActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|density|fontScale|layoutDirection|touchscreen|uiMode"
+            android:documentLaunchMode="always"
+            android:exported="false"
+            android:launchMode="standard"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".SshCodeActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|density|fontScale|layoutDirection|touchscreen|uiMode"
+            android:documentLaunchMode="always"
+            android:exported="false"
+            android:launchMode="standard"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".PortActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|density|fontScale|layoutDirection|touchscreen|uiMode"
+            android:documentLaunchMode="always"
+            android:exported="false"
+            android:launchMode="standard"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize" />
+    </application>
+</manifest>
