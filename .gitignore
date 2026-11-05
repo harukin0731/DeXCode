@@ -1,0 +1,62 @@
+# Gradle / Kotlin / Android generated files
+.gradle/
+.kotlin/
+build/
+.externalNativeBuild/
+.cxx/
+local.properties
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.hprof
+*.log
+
+# Local build artifacts, backups and scratch diffs
+/outputs/
+/work/*
+# This reusable regression check is source, not a generated artifact.
+!/work/verify-tunnel-auth.cjs
+
+# Signing material and real private keys stay on the local machine.
+/signing/*
+!/signing/README.md
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+keystore.properties
+key.properties
+signing.properties
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# Local credentials / environment; sanitized templates can be tracked.
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+/.aws/
+/.ssh/
+/.codex/
+/.agents/
+
+# IDE and OS metadata
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Keep Gradle wrapper files and the explicitly documented synthetic SSH test
+# fixtures under app/src/test/resources/ssh/ in version control.
