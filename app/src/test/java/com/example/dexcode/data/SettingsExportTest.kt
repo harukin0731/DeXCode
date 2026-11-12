@@ -8,7 +8,7 @@ class SettingsExportTest {
     @Test fun exportsVersionedSettingsWithAllConnectionFieldsAndUnicode() {
         val connection = Connection("id", "開発用", "", Kind.SSH, "machine.test", 2222,
             "user", "/home/user/日本語\"folder", 8080, 20000, "content://keys/reference", "wsl.exe -d Ubuntu --", 123L, mapOf(3000 to 13000))
-        val document = SettingsExport.build(listOf(connection), "id", true, "host ssh-ed25519 public-key", "2026-10-26T00:00:00Z", darkHeader = false, mergeTitlebar = false)
+        val document = SettingsExport.build(listOf(connection), "id", true, "host ssh-ed25519 public-key", "2026-10-26T00:00:00Z", darkHeader = false, mergeTitlebar = false, selectionCopy = false, terminalSelectionMode = true)
         val parsed = JSONObject(document.toString(2))
         assertEquals("DeXCode.settings", parsed.getString("format"))
         assertEquals(1, parsed.getInt("schemaVersion"))
@@ -23,12 +23,20 @@ class SettingsExportTest {
         assertTrue(parsed.getJSONObject("preferences").getBoolean("portDeveloperMode"))
         assertFalse(parsed.getJSONObject("preferences").getBoolean("darkHeader"))
         assertFalse(parsed.getJSONObject("preferences").getBoolean("mergeTitlebar"))
+        assertFalse(parsed.getJSONObject("preferences").getBoolean("selectionCopy"))
+        assertTrue(parsed.getJSONObject("preferences").getBoolean("terminalSelectionMode"))
         assertEquals("id", parsed.getJSONObject("preferences").getString("lastUsedConnectionId"))
         assertEquals("host ssh-ed25519 public-key", parsed.getString("sshKnownHosts"))
         assertFalse(row.has("password"))
         assertFalse(row.has("privateKey"))
         assertFalse(parsed.has("secure_secrets"))
         assertFalse(parsed.has("cookies"))
+    }
+
+    @Test fun exportsTouchControlOverrideWithoutLosingAutomaticMode() {
+        assertTrue(SettingsExport.build(emptyList(),null,false,"").getJSONObject("preferences").isNull("touchControls"))
+        assertTrue(SettingsExport.build(emptyList(),null,false,"",touchControls=true).getJSONObject("preferences").getBoolean("touchControls"))
+        assertFalse(SettingsExport.build(emptyList(),null,false,"",touchControls=false).getJSONObject("preferences").getBoolean("touchControls"))
     }
 
     @Test fun handlesEmptySettingsAndKeepsPersistenceSchemaCompatible() {

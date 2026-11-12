@@ -30,6 +30,7 @@ import com.example.dexcode.util.dp
 
 /** Displays a forwarded development port in its own resizable task/window. */
 class PortActivity : AppCompatActivity() {
+    private val downloads by lazy { com.example.dexcode.download.WebDownloads(this) }
     private lateinit var webView: WebView
     private lateinit var progress: ProgressBar
     private lateinit var debugContainer: ScrollView
@@ -41,6 +42,7 @@ class PortActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        downloads
 
         val url = intent.getStringExtra(EXTRA_URL)
         if (url.isNullOrBlank()) {
@@ -96,6 +98,7 @@ class PortActivity : AppCompatActivity() {
             webView,
             initialAllowedUrl = currentUrl,
         )
+        downloads.attach(webView)
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 pageError = null
@@ -111,6 +114,7 @@ class PortActivity : AppCompatActivity() {
                 currentUrl = url
                 clipboardBridge.setPageUrl(url)
                 view.evaluateJavascript(NativeClipboardBridge.INSTALL_SCRIPT, null)
+                downloads.install(view)
                 appendDebug("PAGE FINISH $url")
                 super.onPageFinished(view, url)
             }

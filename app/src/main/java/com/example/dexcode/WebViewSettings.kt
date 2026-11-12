@@ -5,18 +5,20 @@ import android.content.Context
 import android.graphics.Color
 import android.net.Uri
 import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
 import java.util.concurrent.atomic.AtomicReference
 
 object WebViewSettings {
+    private val bridges = java.util.WeakHashMap<WebView, NativeClipboardBridge>()
+    fun clipboardBridge(view: WebView): NativeClipboardBridge? = bridges[view]
     @Suppress("SetJavaScriptEnabled")
     fun apply(
         webView: WebView,
         initialAllowedUrl: String? = null,
         allowLocalhost: Boolean = false,
     ): NativeClipboardBridge {
+        NativeClipboardBridge.loadScript(webView.context)
         webView.setBackgroundColor(Color.WHITE)
         webView.isFocusable = true
         webView.isFocusableInTouchMode = true
@@ -55,18 +57,22 @@ object WebViewSettings {
             initialAllowedUrl,
             allowLocalhost,
         ).also {
-            webView.addJavascriptInterface(it, NativeClipboardBridge.JS_NAME)
+            bridges[webView] = it
+            it.attach(webView)
         }
     }
 }
 
-/** Provides text clipboard access to trusted WebView pages that lack navigator.clipboard. */
+/** Origin-checked text clipboard access, installed before editor and extension page scripts. */
 class NativeClipboardBridge(
     context: Context,
     initialAllowedUrl: String? = null,
     private val allowLocalhost: Boolean = false,
 ) {
     private val appContext = context.applicationContext
+    private var requests = 0
+    private var nativeStatus = "waiting"
+    fun diagnostics(): String = "Native requests: $requests\nNative result: $nativeStatus\nOrigin allowed: ${isAllowed()}\nAutomatic copy: ${appContext.getSharedPreferences("desktop_header", Context.MODE_PRIVATE).getBoolean("selection_copy", true)}"
     private val allowedOrigin = AtomicReference(originOf(initialAllowedUrl))
     private val currentOrigin = AtomicReference<String?>(null)
 
@@ -78,7 +84,6 @@ class NativeClipboardBridge(
         currentOrigin.set(originOf(url))
     }
 
-    @JavascriptInterface
     fun isAllowed(): Boolean {
         val current = currentOrigin.get() ?: return false
         val configured = allowedOrigin.get()
@@ -88,7 +93,6 @@ class NativeClipboardBridge(
         return host == "127.0.0.1" || host == "localhost" || host == "[::1]"
     }
 
-    @JavascriptInterface
     fun readText(): String {
         if (!isAllowed()) return ""
         return runCatching {
@@ -103,7 +107,6 @@ class NativeClipboardBridge(
         }.getOrDefault("")
     }
 
-    @JavascriptInterface
     fun writeText(value: String?): Boolean {
         if (!isAllowed()) return false
         return runCatching {
@@ -112,88 +115,76 @@ class NativeClipboardBridge(
             clipboard.setPrimaryClip(
                 android.content.ClipData.newPlainText("DeXCode", value.orEmpty()),
             )
+            nativeStatus = runCatching {
+                val clip = clipboard.primaryClip
+                when {
+                    clip == null || clip.itemCount == 0 -> "write_sent_readback_unavailable"
+                    clip.getItemAt(0).text?.toString() == value.orEmpty() -> "write_confirmed"
+                    else -> "write_sent_readback_mismatch"
+                }
+            }.getOrDefault("write_sent_readback_unavailable")
             true
-        }.getOrDefault(false)
+        }.onFailure { nativeStatus = "write_failed_${it.javaClass.simpleName}" }.getOrDefault(false)
+    }
+
+    fun attach(view: WebView) {
+        if (!androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.WEB_MESSAGE_LISTENER)) return
+        androidx.webkit.WebViewCompat.addWebMessageListener(view, JS_NAME, setOf("*")) { _, message, sourceOrigin, _, reply ->
+            if (message.type != androidx.webkit.WebMessageCompat.TYPE_STRING) return@addWebMessageListener
+            setPageUrl(view.url)
+            if (message.data.orEmpty().length > 600000) return@addWebMessageListener
+            requests++
+            nativeStatus = "received"
+            val result = org.json.JSONObject()
+            runCatching {
+                val request = org.json.JSONObject(message.data ?: "")
+                result.put("id", request.getInt("id"))
+                // Validate the actual sending frame, not just the URL of the top-level page.
+                nativeStatus = "origin_denied"
+                check(originOf(sourceOrigin.toString()) == currentOrigin.get() && isAllowed())
+                nativeStatus = "authorized"
+                when (request.getString("op")) {
+                    "selection_mode" -> {
+                        val enabled = appContext.getSharedPreferences("desktop_header", Context.MODE_PRIVATE).getBoolean("terminal_selection_mode", false)
+                        result.put("text", if (enabled) "enabled" else "disabled").put("ok", true)
+                        nativeStatus = if (enabled) "terminal_selection_mode_enabled" else "terminal_selection_mode_disabled"
+                    }
+                    "auto" -> {
+                        val enabled = appContext.getSharedPreferences("desktop_header", Context.MODE_PRIVATE).getBoolean("selection_copy", true)
+                        result.put("text", if (enabled) "enabled" else "disabled").put("ok", true)
+                        nativeStatus = if (enabled) "automatic_copy_enabled" else "automatic_copy_disabled"
+                    }
+                    "read" -> { result.put("text", readText()).put("ok", true); nativeStatus = "read_complete" }
+                    "write", "select" -> {
+                        nativeStatus = "automatic_copy_disabled"
+                        if (request.getString("op") == "select") check(appContext.getSharedPreferences("desktop_header", Context.MODE_PRIVATE).getBoolean("selection_copy", true))
+                        val text = request.getString("text")
+                        nativeStatus = "selection_too_large"
+                        check(text.length <= 262144)
+                        val written = writeText(text)
+                        if (!written && !nativeStatus.startsWith("write_failed_")) nativeStatus = "clipboard_write_failed"
+                        result.put("ok", written)
+                    }
+                    else -> result.put("ok", false)
+                }
+            }.onFailure { result.put("ok", false) }
+            runCatching { reply.postMessage(result.toString()) }
+        }
+        if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            androidx.webkit.WebViewCompat.addDocumentStartJavaScript(view, INSTALL_SCRIPT, setOf("*"))
+        }
     }
 
     companion object {
         const val JS_NAME = "DeXCodeClipboard"
-        const val INSTALL_SCRIPT = """
-            (function() {
-              const bridge = window.DeXCodeClipboard;
-              if (!bridge || typeof navigator === "undefined") return;
-              const clipboard = navigator.clipboard;
-              const originalReadText = clipboard && clipboard.readText
-                ? clipboard.readText.bind(clipboard) : null;
-              const originalWriteText = clipboard && clipboard.writeText
-                ? clipboard.writeText.bind(clipboard) : null;
-              const originalRead = clipboard && clipboard.read
-                ? clipboard.read.bind(clipboard) : null;
-              const originalWrite = clipboard && clipboard.write
-                ? clipboard.write.bind(clipboard) : null;
-              const denied = function() {
-                const error = typeof DOMException !== "undefined"
-                  ? new DOMException("Clipboard access denied", "NotAllowedError")
-                  : new Error("Clipboard access denied");
-                return Promise.reject(error);
-              };
-              const allowed = function() {
-                try { return bridge.isAllowed(); } catch (_) { return false; }
-              };
-              const readText = function() {
-                if (!allowed()) return originalReadText ? originalReadText() : denied();
-                return Promise.resolve(bridge.readText());
-              };
-              const writeText = function(value) {
-                if (!allowed()) return originalWriteText
-                  ? originalWriteText(value) : denied();
-                return bridge.writeText(String(value)) ? Promise.resolve() : denied();
-              };
-              const read = function() {
-                if (!allowed()) return originalRead ? originalRead() : denied();
-                if (typeof ClipboardItem === "undefined") return denied();
-                return readText().then(function(text) {
-                  return [new ClipboardItem({
-                    "text/plain": new Blob([text], {type: "text/plain"})
-                  })];
-                });
-              };
-              const write = function(items) {
-                if (!allowed()) return originalWrite ? originalWrite(items) : denied();
-                return Promise.resolve(items).then(async function(values) {
-                  if (!values || !values.length) return;
-                  const item = values[0];
-                  if (!item || !item.types || item.types.indexOf("text/plain") < 0) {
-                    return denied();
-                  }
-                  const blob = await item.getType("text/plain");
-                  return writeText(await blob.text());
-                });
-              };
-              const install = function(target) {
-                try { Object.defineProperty(target, "readText", {
-                  value: readText, configurable: true
-                }); } catch (_) {}
-                try { Object.defineProperty(target, "writeText", {
-                  value: writeText, configurable: true
-                }); } catch (_) {}
-                try { Object.defineProperty(target, "read", {
-                  value: read, configurable: true
-                }); } catch (_) {}
-                try { Object.defineProperty(target, "write", {
-                  value: write, configurable: true
-                }); } catch (_) {}
-              };
-              if (clipboard) {
-                install(clipboard);
-              } else {
-                try { Object.defineProperty(navigator, "clipboard", {
-                  value: {readText: readText, writeText: writeText,
-                    read: read, write: write}, configurable: true
-                }); } catch (_) {}
-              }
-            })();
-        """
+        // Loaded once per process; kept available for WebViews without document-start injection.
+        var INSTALL_SCRIPT: String = ""
+            private set
+        fun loadScript(context: Context) {
+            if (INSTALL_SCRIPT.isEmpty()) INSTALL_SCRIPT = listOf("clipboard.js", "terminal-touch.js").joinToString("\n") { name ->
+                context.assets.open(name).bufferedReader().use { it.readText() }
+            }
+        }
     }
 
     private fun originOf(url: String?): String? {

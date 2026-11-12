@@ -50,6 +50,7 @@ import java.util.concurrent.Executors
 
 /** Connects to a remote workspace, bootstraps code-server, and exposes it through SSH. */
 class SshCodeActivity : AppCompatActivity() {
+    private val downloads by lazy { com.example.dexcode.download.WebDownloads(this) }
     private lateinit var connection: Connection
     private lateinit var webView: WebView
     private lateinit var webContainer: FrameLayout
@@ -64,6 +65,7 @@ class SshCodeActivity : AppCompatActivity() {
     private var generation = 0
     private var localWebPort: Int? = null
     private var initialPath: String? = null
+    private var restoreAfterServerRestart: String? = null
     private val secretStore by lazy { SecureSecretStore(applicationContext) }
 
     private val filePicker = registerForActivityResult(
@@ -78,6 +80,7 @@ class SshCodeActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        downloads
 
         val connectionId = intent.getStringExtra(EXTRA_CONNECTION_ID)
         val savedConnection = connectionId?.let { ConnectionStore(this).get(it) }
@@ -147,6 +150,7 @@ class SshCodeActivity : AppCompatActivity() {
             onReconnect = { startSshConnection() },
             onReload = { webView.reload() },
             onSettings = { AlertDialog.Builder(this).setTitle(R.string.settings).setMessage(R.string.webview_storage_info).setPositiveButton(android.R.string.ok, null).show() },
+            onServerManagement = { showServerManagement() },
         ) { webView }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -173,6 +177,8 @@ class SshCodeActivity : AppCompatActivity() {
 
     private fun startSshConnection() {
         val currentGeneration = ++generation
+        val restoreUrl=restoreAfterServerRestart
+        restoreAfterServerRestart=null
         manager?.close()
         val nextManager = SshSessionManager(
             applicationContext,
@@ -216,7 +222,10 @@ class SshCodeActivity : AppCompatActivity() {
                     if (nextManager.forwardingRestoreErrors.isNotEmpty()) {
                         Toast.makeText(this, R.string.fixed_forward_restore_failed, Toast.LENGTH_LONG).show()
                     }
-                    webView.loadUrl(buildLocalWebUrl(localPort, nextManager.resolvedWorkspacePath))
+                    val defaultUrl=buildLocalWebUrl(localPort,nextManager.resolvedWorkspacePath)
+                    val restore=restoreUrl?.takeIf { com.example.dexcode.util.UrlUtils.isSameOrigin(defaultUrl,it) &&
+                        (Uri.parse(it).getQueryParameter("folder")!=null || Uri.parse(it).getQueryParameter("workspace")!=null) }
+                    webView.loadUrl(restore ?: defaultUrl)
                 }
             } catch (error: Exception) {
                 runOnUiThread {
@@ -225,14 +234,23 @@ class SshCodeActivity : AppCompatActivity() {
                     status.visibility = View.VISIBLE
                     status.text = getString(
                         R.string.ssh_failed_detail,
-                        getString(R.string.ssh_failed),
+                        getString(if(error is SshSessionManager.ServerPreparationException && nextManager.connected)R.string.server_prepare_failed else R.string.ssh_failed),
                         error.message.orEmpty(),
                     )
-                    RuntimeTracker.phase(this@SshCodeActivity, "SSH connection failed")
+                    RuntimeTracker.phase(this@SshCodeActivity, if(nextManager.connected)"SSH connected • server preparation failed" else "SSH connection failed")
                     retry.visibility = View.VISIBLE
                 }
             }
         }
+    }
+
+    private fun showServerManagement() {
+        val current=manager?.takeIf{it.connected}
+        if(current==null){Toast.makeText(this,R.string.server_connect_first,Toast.LENGTH_SHORT).show();return}
+        com.example.dexcode.ui.ServerManagementDialog(this,current,executor) {
+            restoreAfterServerRestart=webView.url
+            startSshConnection()
+        }.show()
     }
 
     private fun blockingHostKeyConfirmation(message: String): Boolean {
@@ -378,6 +396,7 @@ class SshCodeActivity : AppCompatActivity() {
                 if (!isPopup) RuntimeTracker.phase(this@SshCodeActivity, sshPagePhase(pageError ?: "page loaded"))
                 clipboardBridge.setPageUrl(url)
                 view.evaluateJavascript(NativeClipboardBridge.INSTALL_SCRIPT, null)
+                downloads.install(view)
                 super.onPageFinished(view, url)
             }
 
@@ -470,9 +489,7 @@ class SshCodeActivity : AppCompatActivity() {
                 super.onCloseWindow(window)
             }
         }
-        view.setDownloadListener(DownloadListener { url, userAgent, disposition, mimeType, _ ->
-            enqueueDownload(url, userAgent, disposition, mimeType)
-        })
+        downloads.attach(view)
         return view
     }
 
@@ -712,28 +729,6 @@ class SshCodeActivity : AppCompatActivity() {
         } catch (_: ActivityNotFoundException) {
             Toast.makeText(this, R.string.no_browser, Toast.LENGTH_SHORT).show()
         }
-    }
-
-    private fun enqueueDownload(
-        url: String,
-        userAgent: String,
-        contentDisposition: String,
-        mimeType: String,
-    ) {
-        val request = DownloadManager.Request(Uri.parse(url)).apply {
-            addRequestHeader("User-Agent", userAgent)
-            CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
-            setMimeType(mimeType)
-            setTitle(android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType))
-            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            setDestinationInExternalFilesDir(
-                this@SshCodeActivity,
-                Environment.DIRECTORY_DOWNLOADS,
-                android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType),
-            )
-        }
-        getSystemService(DownloadManager::class.java).enqueue(request)
-        Toast.makeText(this, R.string.download_started, Toast.LENGTH_SHORT).show()
     }
 
     private fun closePopup(child: WebView) {

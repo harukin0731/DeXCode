@@ -43,6 +43,13 @@ import java.util.UUID
 import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
+    private var filterQuery = ""
+    private var renderedDark: Boolean? = null
+    private var homeSearch: EditText? = null
+    private var homeToolbar: Toolbar? = null
+    private var homeRunning: TextView? = null
+    private var homeListScroll: ScrollView? = null
+    private val surface get() = com.example.dexcode.ui.AppSurface(this,getSharedPreferences("desktop_header",MODE_PRIVATE).getBoolean("dark",true))
     private lateinit var store: ConnectionStore
     private lateinit var list: LinearLayout
     private var selectedKeyUri: Uri? = null
@@ -65,6 +72,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = ConnectionStore(this)
+        filterQuery=savedInstanceState?.getString("connectionFilter").orEmpty()
 
         renderConnections()
     }
@@ -103,6 +111,9 @@ class MainActivity : AppCompatActivity() {
                         if (knownHosts.exists()) knownHosts.readText() else "",
                         darkHeader = app.getSharedPreferences("desktop_header", MODE_PRIVATE).getBoolean("dark", true),
                         mergeTitlebar = app.getSharedPreferences("desktop_header", MODE_PRIVATE).getBoolean("merge_titlebar", true),
+                        selectionCopy = app.getSharedPreferences("desktop_header", MODE_PRIVATE).getBoolean("selection_copy", true),
+                        touchControls = app.getSharedPreferences("desktop_header",MODE_PRIVATE).let{if(it.contains("touch_controls"))it.getBoolean("touch_controls",false) else null},
+                        terminalSelectionMode = app.getSharedPreferences("desktop_header", MODE_PRIVATE).getBoolean("terminal_selection_mode", false),
                     ).toString(2)
                     checkNotNull(app.contentResolver.openOutputStream(uri, "wt")) { "Unable to open export file" }
                         .bufferedWriter(Charsets.UTF_8).use { it.write(json) }
@@ -116,6 +127,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        if(renderedDark!=surface.dark)renderConnections()
         updating = true
         RuntimeState.store.addListener(runtimeChanged)
         refreshHandler.post(refreshTick)
@@ -135,12 +147,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menu.add(0, 500, 0, R.string.export_settings)
+        menu.add(0, 502, 0, R.string.add_connection).apply {
+            icon=com.example.dexcode.ui.HeaderIconDrawable(com.example.dexcode.ui.HeaderIcon.ADD,surface.accent,dp(24))
+            setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+        }
+        menu.add(0, 500, 1, R.string.export_settings)
         menu.add(0, 501, 1, R.string.refresh_status)
+        homeToolbar?.overflowIcon?.setTint(surface.ink)
         return true
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        502 -> { showEditor(null); true }
         500 -> {
             AlertDialog.Builder(this).setTitle(R.string.export_settings)
                 .setMessage(R.string.export_settings_description)
@@ -160,74 +178,101 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderConnections() {
+        val colors=surface
+        renderedDark=colors.dark
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window,false)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(247, 247, 251))
+            setBackgroundColor(colors.background)
+            isFocusableInTouchMode = true
         }
-
-        val toolbar = Toolbar(this).apply {
-            title = getString(R.string.connections)
-            setTitleTextColor(Color.rgb(25, 27, 32))
-            setBackgroundColor(Color.rgb(247, 247, 251))
+        val toolbar=Toolbar(this).apply {
+            title="DeXCode";setTitleTextColor(colors.ink);setBackgroundColor(colors.background)
+            setContentInsetsRelative(dp(12),dp(12));minimumHeight=dp(48)
         }
-        toolbar.minimumHeight = dp(40)
-        toolbar.setContentInsetsRelative(dp(6), dp(6))
-        root.addView(toolbar, LinearLayout.LayoutParams(-1, dp(40)))
+        homeToolbar = toolbar
+        root.addView(toolbar, LinearLayout.LayoutParams(-1, dp(48)))
         setSupportActionBar(toolbar)
-
-        val scroll = ScrollView(this)
-        list = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(14), dp(20), dp(24))
+        val search=EditText(this).apply {
+            hint=getString(R.string.home_search)
+            textSize=14f
+            setSingleLine(true)
+            inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setTextColor(colors.ink)
+            setHintTextColor(colors.muted)
+            background=colors.shape()
+            setPadding(dp(16),0,dp(16),0)
+            setText(filterQuery)
+        }
+        homeSearch=search
+        root.addView(search,LinearLayout.LayoutParams(-1,dp(48)).apply {
+            leftMargin=dp(12);rightMargin=dp(12);topMargin=dp(8);bottomMargin=dp(8)
+        })
+        homeRunning=colors.button(getString(R.string.home_running_short)) {
+            homeListScroll?.smoothScrollTo(0,runtimeSection.top)
+        }.apply {visibility=View.GONE}
+        root.addView(homeRunning,LinearLayout.LayoutParams(-1,dp(48)).apply {leftMargin=dp(12);rightMargin=dp(12);bottomMargin=dp(8)})
+        val scroll=ScrollView(this).apply {isFillViewport=true}
+        homeListScroll=scroll
+        list=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(12),dp(8),dp(12),dp(24))
         }
         scroll.addView(list)
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
         setContentView(root)
-
-        val intro = TextView(this).apply {
-            text = getString(R.string.saved_servers)
-            primaryTextStyle()
-            textSize = 20f
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(root) {view,insets->
+            val bars=insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars() or androidx.core.view.WindowInsetsCompat.Type.displayCutout())
+            view.setPadding(bars.left,bars.top,bars.right,maxOf(bars.bottom,insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom))
+            insets
         }
-        list.addView(intro, LinearLayout.LayoutParams(-1, -2).apply {
-            bottomMargin = dp(4)
-        })
-
-        val help = TextView(this).apply {
-            text = getString(R.string.choose_connection)
-            secondaryTextStyle()
+        androidx.core.view.WindowCompat.getInsetsController(window,root).apply {
+            isAppearanceLightStatusBars=!colors.dark
+            isAppearanceLightNavigationBars=!colors.dark
         }
-        list.addView(help, LinearLayout.LayoutParams(-1, -2).apply {
-            bottomMargin = dp(18)
-        })
-
-        addActiveWindowSection()
-
-        val add = Button(this).apply {
-            text = getString(R.string.add_connection_button)
-            isAllCaps = false
-            setOnClickListener { showEditor(null) }
+        androidx.core.view.ViewCompat.requestApplyInsets(root)
+        if(resources.configuration.screenWidthDp>=600) {
+            list.addView(colors.label(getString(R.string.home_title),26f).apply {setTypeface(null,android.graphics.Typeface.BOLD)})
+            list.addView(colors.label(getString(R.string.home_description),13f,true).apply {setPadding(0,dp(4),0,dp(16))})
         }
-        list.addView(add, LinearLayout.LayoutParams(-1, dp(48)).apply {
-            bottomMargin = dp(18)
-        })
-
-        savedRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        list.addView(savedRows, LinearLayout.LayoutParams(-1, -2))
-        lastConnections = null
+        list.addView(colors.label(getString(R.string.saved_servers),15f).apply {setTypeface(null,android.graphics.Typeface.BOLD)},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=dp(8)})
+        savedRows=LinearLayout(this).apply {orientation=LinearLayout.VERTICAL}
+        list.addView(savedRows)
+        lastConnections=null
         refreshSavedConnections()
+        search.addTextChangedListener(object:android.text.TextWatcher {
+            override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int)=Unit
+            override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){filterQuery=s.toString();lastConnections=null;refreshSavedConnections()}
+            override fun afterTextChanged(s:android.text.Editable?)=Unit
+        })
+        addActiveWindowSection()
+        root.requestFocus()
     }
+
+    override fun onConfigurationChanged(newConfig:android.content.res.Configuration) {
+        val editingSearch=homeSearch?.hasFocus()==true
+        val scrollPosition=homeListScroll?.scrollY ?: 0
+        super.onConfigurationChanged(newConfig)
+        renderConnections()
+        homeListScroll?.post {homeListScroll?.scrollTo(0,scrollPosition)}
+        if(editingSearch)homeSearch?.apply{requestFocus();setSelection(text.length)}
+    }
+
+    override fun onSaveInstanceState(outState:Bundle){outState.putString("connectionFilter",filterQuery);super.onSaveInstanceState(outState)}
 
     private fun refreshSavedConnections() {
         if (!::savedRows.isInitialized) return
-        val connections = store.getAll()
+        val connections = store.getAll().filter { connection ->
+            filterQuery.isBlank() || listOf(connection.name,connection.sshHost,connection.workspacePath,
+                if(connection.kind==Kind.WEB)ConnectionDiagnostics.safeTarget(connection.url) else "SSH").any{it.contains(filterQuery.trim(),true)}
+        }
         if (connections == lastConnections) return
         lastConnections = connections
         savedRows.removeAllViews()
         if (connections.isEmpty()) {
             savedRows.addView(TextView(this).apply {
-                text = getString(R.string.no_connections)
-                secondaryTextStyle()
+                text = getString(if(filterQuery.isBlank())R.string.no_connections else R.string.home_no_matches)
+                setTextColor(surface.muted)
                 setPadding(0, dp(28), 0, dp(28))
             })
         } else connections.sortedWith(compareByDescending<Connection> { it.lastUsedAt }
@@ -252,19 +297,23 @@ class MainActivity : AppCompatActivity() {
             .getOrDefault(emptyList())
         val taskIds = tasks.mapNotNull { runCatching { taskIdOf(it.taskInfo) }.getOrNull() }.toSet()
         val windows = RuntimeState.store.snapshotWindows().filter { it.taskId in taskIds }
+        homeRunning?.apply {
+            visibility=if(windows.isNotEmpty() || forwards.isNotEmpty())View.VISIBLE else View.GONE
+            text=getString(R.string.home_running_summary,windows.size,forwards.size)
+        }
         val snapshot = windows to forwards
         if (snapshot == lastRuntime) return
         lastRuntime = snapshot
         runtimeSection.removeAllViews()
         fun heading(label: Int) {
             runtimeSection.addView(TextView(this).apply {
-                text = getString(label); primaryTextStyle(); textSize = 18f
+                text = getString(label); setTextColor(surface.ink); textSize = 16f
                 setPadding(0, dp(8), 0, dp(5))
             })
         }
         fun note(textValue: String) {
             runtimeSection.addView(TextView(this).apply {
-                text = textValue; secondaryTextStyle(); setPadding(0, 0, 0, dp(10))
+                text = textValue; setTextColor(surface.muted);textSize=12f; setPadding(0, 0, 0, dp(10))
             })
         }
         heading(R.string.active_windows)
@@ -273,7 +322,7 @@ class MainActivity : AppCompatActivity() {
         windows.forEach { window ->
             val row = runtimeRow("${window.title} • ${window.type}", "${window.visibility} • ${window.phase}")
             row.addView(Button(this).apply {
-                text = getString(R.string.switch_window); isAllCaps = false
+                text = getString(R.string.switch_window); isAllCaps = false;setTextColor(surface.accent);backgroundTintList=android.content.res.ColorStateList.valueOf(surface.card)
                 setOnClickListener {
                     runCatching {
                         getSystemService(ActivityManager::class.java).appTasks
@@ -294,12 +343,12 @@ class MainActivity : AppCompatActivity() {
             val fixedLabel = if (forward.fixed) " • ${getString(R.string.fixed_port_label)}" else ""
             val row = runtimeRow(forward.connectionName, "$detail$fixedLabel\n${forward.url}")
             row.addView(Button(this).apply {
-                text = getString(R.string.copy_address); isAllCaps = false
+                text = getString(R.string.copy_address); isAllCaps = false;setTextColor(surface.accent);backgroundTintList=android.content.res.ColorStateList.valueOf(surface.card)
                 setOnClickListener { copyForwardUrl(this@MainActivity, forward.url) }
             })
             if (!forward.editor) row.addView(Button(this).apply {
                 text = getString(if (forward.kind == ForwardKind.PROXY_URL) R.string.remove_url else R.string.stop_forward)
-                isAllCaps = false
+                isAllCaps = false;setTextColor(surface.accent);backgroundTintList=android.content.res.ColorStateList.valueOf(surface.card)
                 setOnClickListener {
                     runCatching { RuntimeState.store.stop(forward) }
                         .onFailure { Toast.makeText(this@MainActivity, it.message, Toast.LENGTH_LONG).show() }
@@ -313,75 +362,60 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runtimeRow(titleValue: String, detailValue: String): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        background = cardBackground()
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.START
+        background = surface.shape()
         setPadding(dp(10), dp(6), dp(4), dp(6))
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) }
         addView(LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.VERTICAL
-            addView(TextView(this@MainActivity).apply { text = titleValue; primaryTextStyle() })
-            addView(TextView(this@MainActivity).apply { text = detailValue; secondaryTextStyle() })
-        }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(TextView(this@MainActivity).apply { text = titleValue;setTextColor(surface.ink);textSize=14f;maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END })
+            addView(TextView(this@MainActivity).apply { text = detailValue;setTextColor(surface.muted);textSize=12f;maxLines=3;ellipsize=android.text.TextUtils.TruncateAt.END })
+        }, LinearLayout.LayoutParams(-1, -2))
     }
 
     private fun addConnectionRow(connection: Connection) {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = cardBackground()
-            setPadding(dp(14), dp(10), dp(8), dp(10))
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { openConnection(connection) }
+        val colors=surface
+        val row=LinearLayout(this).apply {
+            gravity=Gravity.CENTER_VERTICAL
+            background=colors.ripple()
+            minimumHeight=dp(80)
+            setPadding(dp(12),dp(10),dp(4),dp(10))
+            isFocusable=true
+            setOnClickListener {openConnection(connection)}
         }
-
-        val details = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        val icon=android.widget.ImageView(this).apply {
+            setImageDrawable(com.example.dexcode.ui.HeaderIconDrawable(if(connection.kind==Kind.SSH)com.example.dexcode.ui.HeaderIcon.TERMINAL else com.example.dexcode.ui.HeaderIcon.WINDOW,colors.accent,dp(22)))
+            background=colors.shape(if(colors.dark)Color.rgb(39,54,76) else Color.rgb(230,239,253),12,false)
         }
-        val name = TextView(this).apply {
-            text = connection.name
-            primaryTextStyle()
+        row.addView(icon,LinearLayout.LayoutParams(dp(40),dp(40)).apply {rightMargin=dp(10)})
+        val details=LinearLayout(this).apply {orientation=LinearLayout.VERTICAL}
+        val nameRow=LinearLayout(this).apply {gravity=Gravity.CENTER_VERTICAL}
+        nameRow.addView(colors.label(connection.name,16f).apply {
+            setTypeface(null,android.graphics.Typeface.BOLD)
+            setSingleLine(true)
+            ellipsize=android.text.TextUtils.TruncateAt.END
+        },LinearLayout.LayoutParams(0,-2,1f))
+        nameRow.addView(colors.label(if(connection.kind==Kind.SSH)"SSH" else "WEB",10f,true).apply {setPadding(dp(6),0,0,0)})
+        details.addView(nameRow)
+        fun metadata(value:String,size:Float) {
+            details.addView(colors.label(value,size,true).apply {
+                setSingleLine(true)
+                ellipsize=android.text.TextUtils.TruncateAt.MIDDLE
+            },LinearLayout.LayoutParams(-1,-2).apply {topMargin=dp(3)})
         }
-        val url = TextView(this).apply {
-            text = if (connection.kind == Kind.SSH) {
-                getString(
-                    R.string.ssh_summary,
-                    connection.sshUsername,
-                    connection.sshHost,
-                    connection.sshPort,
-                    connection.workspacePath.ifBlank { "~" },
-                )
-            } else {
-                connection.url
-            }
-            secondaryTextStyle()
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
-        }
-        details.addView(name)
-        details.addView(url, LinearLayout.LayoutParams(-1, -2).apply {
-            topMargin = dp(3)
-        })
-        row.addView(details, LinearLayout.LayoutParams(0, -2, 1f))
-
-        val open = Button(this).apply {
-            text = getString(R.string.open)
-            isAllCaps = false
-            setOnClickListener { openConnection(connection) }
-        }
-        row.addView(open, LinearLayout.LayoutParams(-2, dp(48)))
-
-        val edit = Button(this).apply {
-            text = getString(R.string.edit)
-            isAllCaps = false
-            setOnClickListener { showEditor(connection) }
-        }
-        row.addView(edit, LinearLayout.LayoutParams(-2, dp(48)))
-
-        savedRows.addView(row, LinearLayout.LayoutParams(-1, -2).apply {
-            bottomMargin = dp(10)
-        })
+        if(connection.kind==Kind.SSH) {
+            metadata("${connection.sshUsername}@${connection.sshHost}:${connection.sshPort}",12f)
+            metadata(connection.workspacePath.ifBlank {"~"},12f)
+        } else metadata(ConnectionDiagnostics.safeTarget(connection.url).substringBefore(" ("),13f)
+        row.addView(details,LinearLayout.LayoutParams(0,-2,1f))
+        row.addView(android.widget.ImageButton(this).apply {
+            contentDescription=getString(R.string.edit)+" "+connection.name
+            setImageDrawable(com.example.dexcode.ui.HeaderIconDrawable(com.example.dexcode.ui.HeaderIcon.SETTINGS,colors.muted,dp(19)))
+            background=colors.ripple()
+            setOnClickListener {showEditor(connection)}
+        },LinearLayout.LayoutParams(dp(48),dp(48)))
+        savedRows.addView(row,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=dp(8)})
     }
 
     private fun showEditor(existing: Connection?) {

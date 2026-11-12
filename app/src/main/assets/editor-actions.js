@@ -29,6 +29,7 @@
     if (stage === 2) {
         const input = quickInput();
         if (!input) return 'unavailable';
+        if (typeof window.__dexcodePositionQuickInput === 'function') window.__dexcodePositionQuickInput();
         const value = action === 'commands' ? '>' : '';
         if (input.value !== value) {
             Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
@@ -41,9 +42,14 @@
         if (quickInput()) return 'sent';
         // Invoke the workbench's own command-center action rather than Android's Ctrl+P path.
         const button = Array.from(workbench.querySelectorAll(
+            '.command-center .agent-status-input-area[role="button"], ' +
             '.command-center .command-center-quick-pick, .command-center .action-label.codicon-search'
         )).find(visible);
-        if (button) { button.click(); return 'sent'; }
+        if (button) {
+            button.dispatchEvent(new MouseEvent('click', {view: window, button: 0, detail: 1,
+                bubbles: true, cancelable: true, composed: true}));
+            return 'sent';
+        }
     }
     if (action === 'commands') key('F1', 'F1', 112, false, false);
     else key('p', 'KeyP', 80, true, false);

@@ -8,7 +8,7 @@ import java.time.Instant
 object SettingsExport {
     fun build(
         connections: List<Connection>, lastUsedId: String?, developerMode: Boolean,
-        knownHosts: String, exportedAt: String = Instant.now().toString(), darkHeader: Boolean = true, mergeTitlebar: Boolean = true,
+        knownHosts: String, exportedAt: String = Instant.now().toString(), darkHeader: Boolean = true, mergeTitlebar: Boolean = true, selectionCopy: Boolean = true, terminalSelectionMode: Boolean = false, touchControls: Boolean? = null,
     ): JSONObject = JSONObject()
         .put("format", "DeXCode.settings")
         .put("schemaVersion", 1)
@@ -18,7 +18,10 @@ object SettingsExport {
             .put("lastUsedConnectionId", lastUsedId ?: JSONObject.NULL)
             .put("portDeveloperMode", developerMode)
             .put("darkHeader", darkHeader)
-            .put("mergeTitlebar", mergeTitlebar))
+            .put("mergeTitlebar", mergeTitlebar)
+            .put("selectionCopy", selectionCopy)
+            .put("terminalSelectionMode", terminalSelectionMode)
+            .put("touchControls", touchControls ?: JSONObject.NULL))
         .put("sshKnownHosts", knownHosts)
         .put("excluded", JSONArray(listOf("savedPasswords", "privateKeyContents", "browserLoginState")))
         .put("keyReferenceNote", "sshKeyUri is a reference only. Reselect private-key files on another device.")

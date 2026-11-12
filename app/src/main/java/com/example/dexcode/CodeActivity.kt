@@ -48,6 +48,7 @@ import org.json.JSONTokener
 import org.json.JSONObject
 
 class CodeActivity : AppCompatActivity() {
+    private val downloads by lazy { com.example.dexcode.download.WebDownloads(this) }
     private lateinit var connection: Connection
     private lateinit var webView: WebView
     private lateinit var webContainer: FrameLayout
@@ -76,6 +77,7 @@ class CodeActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        downloads
 
         val connectionId = intent.getStringExtra(EXTRA_CONNECTION_ID)
         val savedConnection = connectionId?.let { ConnectionStore(this).get(it) }
@@ -194,6 +196,7 @@ class CodeActivity : AppCompatActivity() {
                 diagnostics.record(if (isPopup) "POPUP FINISH" else "PAGE FINISH", url)
                 clipboardBridge.setPageUrl(url)
                 view.evaluateJavascript(NativeClipboardBridge.INSTALL_SCRIPT, null)
+                downloads.install(view)
                 progress.visibility = View.GONE
                 bridgeVsCodeCallback(view, url)
                 super.onPageFinished(view, url)
@@ -246,9 +249,7 @@ class CodeActivity : AppCompatActivity() {
             }
         }
         view.webChromeClient = createChromeClient()
-        view.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
-            enqueueDownload(url, userAgent, contentDisposition, mimeType)
-        })
+        downloads.attach(view)
         return view
     }
 
@@ -649,29 +650,6 @@ class CodeActivity : AppCompatActivity() {
         }
     }
 
-    private fun enqueueDownload(
-        url: String,
-        userAgent: String,
-        contentDisposition: String,
-        mimeType: String,
-    ) {
-        val request = DownloadManager.Request(Uri.parse(url)).apply {
-            addRequestHeader("User-Agent", userAgent)
-            CookieManagerHolder.addCookieHeader(this, url)
-            setMimeType(mimeType)
-            setTitle(android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType))
-            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            // App-scoped external storage works without broad storage permissions on modern Android.
-            setDestinationInExternalFilesDir(
-                this@CodeActivity,
-                Environment.DIRECTORY_DOWNLOADS,
-                android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType),
-            )
-        }
-        getSystemService(DownloadManager::class.java).enqueue(request)
-        Toast.makeText(this, R.string.download_started, Toast.LENGTH_SHORT).show()
-    }
-
     private fun showSettings() {
         AlertDialog.Builder(this)
             .setTitle(R.string.settings)
@@ -738,13 +716,6 @@ class CodeActivity : AppCompatActivity() {
             webView.destroy()
         }
         super.onDestroy()
-    }
-
-    private object CookieManagerHolder {
-        fun addCookieHeader(request: DownloadManager.Request, url: String) {
-            val cookie = android.webkit.CookieManager.getInstance().getCookie(url)
-            if (!cookie.isNullOrBlank()) request.addRequestHeader("Cookie", cookie)
-        }
     }
 
     companion object {

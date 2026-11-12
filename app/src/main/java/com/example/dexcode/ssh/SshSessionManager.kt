@@ -79,13 +79,14 @@ class SshSessionManager(
 
             val remotePort = connection.remotePort
             interaction.status("Preparing the remote VS Code server")
-            val result = executeBootstrap(sshSession)
+            val result = try { executeBootstrap(sshSession) }
+                catch(error:Exception) { throw ServerPreparationException(error.message ?: "Server preparation failed",error) }
             resolvedWorkspacePath = result.stdout.lineSequence()
                 .firstOrNull { it.startsWith("DEXCODE:workspace:") }
                 ?.removePrefix("DEXCODE:workspace:")
                 ?.takeIf { it.isNotBlank() }
             if (result.exitStatus != 0) {
-                throw IllegalStateException(
+                throw ServerPreparationException(
                     result.stderr.ifBlank { result.stdout }.takeLast(MAX_ERROR_LENGTH),
                 )
             }
@@ -109,6 +110,10 @@ class SshSessionManager(
             interaction.status("Remote VS Code is ready")
             return localPort
         } catch (error: Exception) {
+            if(error is ServerPreparationException && !closed && sshSession.isConnected) {
+                RuntimeState.store.addSource(this)
+                throw error
+            }
             sshSession.disconnect()
             jsch.removeAllIdentity()
             session = null
@@ -223,6 +228,79 @@ class SshSessionManager(
         }
     }
 
+    fun inspectServer(): ServerManagement.Snapshot = ServerManagement.Snapshot(
+        ServerManagement.parse(executeManagement(ServerManagement.header("inspect",connection.remotePort)+managementAsset()))
+    )
+
+    fun startServerUpdate(snapshot: ServerManagement.Snapshot, requested: String, allowSudo: Boolean): String {
+        val version=ServerManagement.version(requested) ?: error("Invalid stable version")
+        check(snapshot.canUpdate) { "This installation cannot be updated automatically" }
+        check(!snapshot.needsAdmin || allowSudo) { "Administrator authorization is required" }
+        val asset=if(snapshot.method=="npm" || (snapshot.method=="standalone" && version in snapshot.localVersions)) null
+            else ServerManagement.asset(snapshot.method,version,snapshot.fields["arch"].orEmpty())
+        val fields=snapshot.expectation()+mapOf("VERSION" to version,"ALLOW_SUDO" to if(allowSudo)"1" else "0",
+            "EXPECTED_ASSET" to asset?.name.orEmpty(),"EXPECTED_SHA256" to asset?.sha256.orEmpty())
+        val payload=ServerManagement.header("update",connection.remotePort,fields)+managementAsset()
+        val job=UUID.randomUUID().toString()
+        val runner=context.assets.open("server-job-runner.sh").bufferedReader().use { it.readText() }
+        val launcher=ServerManagement.jobLauncher(job,connection.remotePort,payload,runner)
+        val result=ServerManagement.parse(executeManagement(launcher))
+        check(result["jobId"]==job) { "Could not confirm the update job. Reopen server management to check its state." }
+        return job
+    }
+
+    fun serverUpdateStatus(job:String): Map<String,String> {
+        require(job.matches(Regex("[a-f0-9-]{36}")))
+        return ServerManagement.parse(executeManagement(ServerManagement.header("job",connection.remotePort,mapOf("JOB_ID" to job))+managementAsset()))
+    }
+
+    fun stopManagedServer(snapshot:ServerManagement.Snapshot) {
+        check(snapshot.canRestart) { "The server is not verified as DeXCode-owned" }
+        val result=ServerManagement.parse(executeManagement(ServerManagement.header("restart",connection.remotePort,
+            mapOf("EXPECTED_PID" to snapshot.fields["pid"].orEmpty(),"EXPECTED_PROCESS_ID" to snapshot.fields["processIdentity"].orEmpty()))+managementAsset()))
+        check(result["stopped"]=="1") { "Could not confirm that the server stopped" }
+    }
+
+    private fun managementAsset()=context.assets.open("server-management.sh").bufferedReader().use { it.readText() }
+
+    private fun executeManagement(script:String):String {
+        val ssh=checkNotNull(session?.takeIf { connected }) { "SSH session is not connected" }
+        val channel=ssh.openChannel("exec") as ChannelExec
+        val output=ByteArrayOutputStream()
+        val errors=object:ByteArrayOutputStream() {
+            @Synchronized override fun write(buffer:ByteArray,offset:Int,length:Int) {
+                super.write(buffer,offset,minOf(length,(65536-size()).coerceAtLeast(0)))
+            }
+            @Synchronized override fun write(value:Int) { if(size()<65536)super.write(value) }
+        }
+        val prefix=connection.remoteCommandPrefix.trim()
+        channel.setCommand(if(prefix.isBlank())"sh -s" else "$prefix sh -s")
+        channel.setInputStream(null)
+        channel.setErrStream(errors)
+        try {
+            val input=channel.inputStream
+            channel.connect(15_000)
+            channel.outputStream.use { it.write(script.toByteArray(StandardCharsets.UTF_8));it.flush() }
+            val deadline=System.nanoTime()+60_000_000_000L
+            val buffer=ByteArray(8192)
+            while(true) {
+                while(input.available()>0) {
+                    val count=input.read(buffer)
+                    if(count<0)break
+                    check(output.size()+count<=262144) { "Server management response too large" }
+                    output.write(buffer,0,count)
+                }
+                if(channel.isClosed && input.available()==0)break
+                check(connected && !Thread.currentThread().isInterrupted) { "SSH session disconnected; reopen server management after reconnecting" }
+                check(System.nanoTime()<deadline) { "Server management timed out; reopen it to check the remote job" }
+                Thread.sleep(50)
+            }
+            val stdout=output.toString("UTF-8")
+            check(channel.exitStatus==0) { errors.toString("UTF-8").ifBlank { stdout }.takeLast(MAX_ERROR_LENGTH) }
+            return stdout
+        } finally {channel.disconnect()}
+    }
+
     private fun executeBootstrap(sshSession: Session): CommandResult {
         val channel = sshSession.openChannel("exec") as ChannelExec
         val output = ByteArrayOutputStream()
@@ -299,6 +377,14 @@ class SshSessionManager(
             TRUST_MARKER="${'$'}HOME/.cache/dexcode/workspace-trust-disabled-${'$'}PORT-ms-marketplace"
             PID_FILE="${'$'}HOME/.cache/dexcode/code-server-${'$'}PORT.pid"
             mkdir -p "${'$'}HOME/.cache/dexcode"
+            # Do not launch a server while a managed update replaces its files.
+            if command -v flock >/dev/null 2>&1; then
+              exec 8>"${'$'}HOME/.cache/dexcode/server-operation.lock"
+              if ! flock -w 60 8; then
+                echo "A server update or startup is still running. Check Server management and reconnect later." >&2
+                exit 24
+              fi
+            fi
 
             http_code() {
               if command -v curl >/dev/null 2>&1; then
@@ -321,6 +407,20 @@ class SshSessionManager(
             }
 
             if ready && [ -f "${'$'}TRUST_MARKER" ]; then
+              # An in-place package update unlinks the old Node executable. A healthy
+              # HTTP response alone does not mean this old process can serve new assets.
+              CANDIDATE_PIDS="${'$'}(cat "${'$'}PID_FILE" 2>/dev/null || true)"
+              if command -v ss >/dev/null 2>&1; then
+                CANDIDATE_PIDS="${'$'}CANDIDATE_PIDS ${'$'}(ss -H -ltnp "sport = :${'$'}PORT" 2>/dev/null | grep -o 'pid=[0-9][0-9]*' | cut -d= -f2 || true)"
+              fi
+              for CANDIDATE_PID in ${'$'}CANDIDATE_PIDS; do
+                case "${'$'}CANDIDATE_PID" in ''|*[!0-9]*) continue;; esac
+                RUNNING_EXE="${'$'}(readlink "/proc/${'$'}CANDIDATE_PID/exe" 2>/dev/null || true)"
+                case "${'$'}RUNNING_EXE" in *code-server*/lib/node' (deleted)')
+                  echo "Server files were replaced while the old process is running. Restart the server from Server management, or use its external service manager." >&2
+                  exit 25;;
+                esac
+              done
               echo "DEXCODE:reusing"
               exit 0
             fi
@@ -347,7 +447,11 @@ class SshSessionManager(
             SERVER=""
             SERVER_KIND=""
             SERVER_PID=""
-            if command -v code-server >/dev/null 2>&1; then
+            PREFERRED_SERVER="${'$'}(cat "${'$'}HOME/.cache/dexcode/code-server-${'$'}PORT.preferred-launcher" 2>/dev/null || true)"
+            if [ -n "${'$'}PREFERRED_SERVER" ] && [ -x "${'$'}PREFERRED_SERVER" ] && [ "${'$'}(basename "${'$'}PREFERRED_SERVER")" = code-server ]; then
+              SERVER="${'$'}PREFERRED_SERVER"
+              SERVER_KIND="code-server"
+            elif command -v code-server >/dev/null 2>&1; then
               SERVER="${'$'}(command -v code-server)"
               SERVER_KIND="code-server"
             elif command -v openvscode-server >/dev/null 2>&1; then
@@ -374,7 +478,7 @@ class SshSessionManager(
                 --auth none \
                 --disable-workspace-trust \
                 --disable-telemetry \
-                --disable-update-check >"${'$'}LOG" 2>&1 </dev/null &
+                --disable-update-check >"${'$'}LOG" 2>&1 </dev/null 8>&- &
               SERVER_PID=${'$'}!
             else
               nohup "${'$'}SERVER" \
@@ -382,10 +486,19 @@ class SshSessionManager(
                 --port "${'$'}PORT" \
                 --without-connection-token \
                 --disable-workspace-trust \
-                --default-folder "${'$'}WORKSPACE" >"${'$'}LOG" 2>&1 </dev/null &
+                --default-folder "${'$'}WORKSPACE" >"${'$'}LOG" 2>&1 </dev/null 8>&- &
               SERVER_PID=${'$'}!
             fi
             echo "${'$'}SERVER_PID" >"${'$'}PID_FILE"
+            printf '%s\n' "${'$'}SERVER" >"${'$'}PID_FILE.started-launcher.tmp"
+            mv -f "${'$'}PID_FILE.started-launcher.tmp" "${'$'}HOME/.cache/dexcode/code-server-${'$'}PORT.started-launcher"
+            if [ -r "/proc/${'$'}SERVER_PID/stat" ] && [ -r /proc/sys/kernel/random/boot_id ]; then
+              PROC_START="${'$'}(sed 's/^[0-9][0-9]* (.*) //' /proc/${'$'}SERVER_PID/stat | awk '{print ${'$'}20}')"
+              printf '%s:%s\n' "${'$'}(cat /proc/sys/kernel/random/boot_id)" "${'$'}PROC_START" >"${'$'}PID_FILE.identity"
+            fi
+            if [ "${'$'}SERVER_KIND" = code-server ]; then
+              "${'$'}SERVER" --version 2>/dev/null | sed -n '1{s/ .*//;p;}' >"${'$'}PID_FILE.version" || true
+            fi
 
             i=0
             while [ "${'$'}i" -lt 45 ]; do
@@ -463,6 +576,8 @@ class SshSessionManager(
             return if (answers.all { it != null }) answers.map { it.orEmpty() }.toTypedArray() else null
         }
     }
+
+    class ServerPreparationException(message:String,cause:Throwable?=null):IllegalStateException(message,cause)
 
     enum class SecretKind { PASSWORD, PASSPHRASE }
 

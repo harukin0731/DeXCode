@@ -3,6 +3,7 @@ package com.example.dexcode.ui
 import android.app.ActivityManager
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Point
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -45,19 +46,27 @@ class WorkspaceHeader(
     private val onReload: () -> Unit,
     private val onSettings: () -> Unit,
     private val onDiagnostics: (() -> Unit)? = null,
+    private val onServerManagement: (() -> Unit)? = null,
     private val editor: () -> WebView,
 ) : DefaultLifecycleObserver {
+    private lateinit var mobileControls: MobileEditorControls
     private val titlebarBridge by lazy { TitlebarBridge(editor()) }
-    private val titleControls = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
+    private val actionButtons = linkedMapOf<HeaderIcon, android.widget.ImageButton>()
+    private val actionPresentations = mutableMapOf<HeaderIcon, Triple<Boolean, Boolean, Boolean>>()
+    private var selectionPresentation: Pair<Boolean, Boolean>? = null
+    private val fixedIcons = linkedMapOf<android.widget.ImageButton, HeaderIcon>()
+    private var currentSizing = HeaderSizing.forWidth(1000)
+    private lateinit var selectionButton: android.widget.ImageButton
     private var mirroredControls = emptyList<TitlebarBridge.Control>()
     private var mirroredPalette: Boolean? = null
+    private val clipboardControls by lazy { ClipboardControls(activity, editor()) }
     private val editorActions by lazy { EditorActions(editor()) }
     private val handler = Handler(Looper.getMainLooper())
     private val preferences = activity.getSharedPreferences("desktop_header", 0)
     private var dark = preferences.getBoolean("dark", true)
-    private val ink get() = if (dark) Color.rgb(225, 229, 238) else Color.rgb(35, 42, 55)
-    private val surface get() = if (dark) Color.rgb(35, 39, 47) else Color.rgb(242, 244, 249)
-    private val accent get() = if (dark) Color.rgb(126, 180, 255) else Color.rgb(36, 97, 185)
+    private val ink get() = if (dark) Color.rgb(232, 237, 246) else Color.rgb(31, 43, 62)
+    private val surface get() = if (dark) Color.rgb(23, 28, 37) else Color.rgb(242, 246, 252)
+    private val accent get() = if (dark) Color.rgb(145, 187, 255) else Color.rgb(40, 94, 194)
     private val tabs = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
     private val status = TextView(activity).apply {
         textSize = 12f
@@ -67,14 +76,19 @@ class WorkspaceHeader(
         setPadding(activity.dp(8), 0, activity.dp(8), 0)
         setOnClickListener { showStatus() }
     }
+    private lateinit var commandButton: android.widget.ImageButton
+    private lateinit var more: android.widget.ImageButton
+    private val clusters = mutableListOf<LinearLayout>()
     private lateinit var search: TextView
-    private lateinit var home: TextView
-    private lateinit var add: TextView
-    private lateinit var chooser: TextView
+    private lateinit var home: android.widget.ImageButton
+    private lateinit var add: android.widget.ImageButton
+    private lateinit var chooser: android.widget.ImageButton
     private lateinit var row: LinearLayout
+    private var currentWorkspaceTitle = title
     private var lastPhase = ""
     private var forwardCount = 0
     private var compactStatus = false
+    private var statusPresentation: Triple<String, Int, Boolean>? = null
     private var lastWindows: Any? = null
     private var active = false
     private var integrated = false
@@ -92,63 +106,83 @@ class WorkspaceHeader(
         toolbar.title = ""
         toolbar.navigationIcon = null
         toolbar.setContentInsetsRelative(0, 0)
-        row = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
-        home = button("▦", activity.getString(R.string.header_connections)) { connections() }
-        row.addView(home, LinearLayout.LayoutParams(activity.dp(36), -1))
+        row = LinearLayout(activity).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(activity.dp(8), 0, activity.dp(8), 0)
+        }
+        val workspaces = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
+        home = iconButton(HeaderIcon.CONNECTIONS, activity.getString(R.string.header_connections)) { connections() }
+        workspaces.addView(home, LinearLayout.LayoutParams(activity.dp(36), activity.dp(36)))
         val scroll = HorizontalScrollView(activity).apply {
             isHorizontalScrollBarEnabled = false
             addView(tabs)
         }
-        row.addView(scroll, LinearLayout.LayoutParams(0, -1, 1f))
-        chooser = button("▾", activity.getString(R.string.header_all_workspaces)) { showWorkspaces() }
-        row.addView(chooser, LinearLayout.LayoutParams(activity.dp(30), -1))
-        add = button("+", activity.getString(R.string.new_window)) { newWindow() }
-        row.addView(add, LinearLayout.LayoutParams(activity.dp(34), -1))
+        workspaces.addView(scroll, LinearLayout.LayoutParams(0, -1, 1f))
+        chooser = iconButton(HeaderIcon.WORKSPACES, activity.getString(R.string.header_all_workspaces)) { showWorkspaces() }
+        workspaces.addView(chooser, LinearLayout.LayoutParams(activity.dp(28), activity.dp(36)))
+        add = iconButton(HeaderIcon.ADD, activity.getString(R.string.new_window)) { newWindow() }
+        workspaces.addView(add, LinearLayout.LayoutParams(activity.dp(32), activity.dp(36)))
+        val navigation = cluster()
+        for (icon in listOf(HeaderIcon.BACK, HeaderIcon.FORWARD)) navigation.addView(mirroredButton(icon), LinearLayout.LayoutParams(activity.dp(36), activity.dp(36)))
+        workspaces.addView(navigation, LinearLayout.LayoutParams(-2, activity.dp(38)))
+        row.addView(workspaces, LinearLayout.LayoutParams(0, -1, 1f).apply {rightMargin=activity.dp(8)})
         search = button(activity.getString(R.string.header_search), activity.getString(R.string.header_search_description)) {
             editorActions.run(EditorActions.Action.FILES)
-        }.apply {
-            setOnLongClickListener { editorActions.run(EditorActions.Action.COMMANDS); true }
+        }.apply { setOnLongClickListener { editorActions.run(EditorActions.Action.COMMANDS); true } }
+        row.addView(search, LinearLayout.LayoutParams(activity.dp(220), activity.dp(34)))
+        commandButton=iconButton(HeaderIcon.COMMAND, activity.getString(R.string.header_commands_description)) {
+            editorActions.run(EditorActions.Action.COMMANDS)
         }
-        row.addView(search, LinearLayout.LayoutParams(activity.dp(230), activity.dp(30)).apply {
-            leftMargin = activity.dp(10); rightMargin = activity.dp(10)
-        })
-        val controlsScroll = HorizontalScrollView(activity).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(titleControls)
-        }
-        row.addView(controlsScroll, LinearLayout.LayoutParams(activity.dp(150), -1))
-        row.addView(status, LinearLayout.LayoutParams(activity.dp(110), activity.dp(30)))
-        row.addView(button("⋮", activity.getString(R.string.header_unified_menu)) { showStatus() }, LinearLayout.LayoutParams(activity.dp(32), -1))
-        // This blank strip is deliberately excluded from interactive gesture regions.
-        row.addView(View(activity), LinearLayout.LayoutParams(activity.dp(20), -1))
+        row.addView(commandButton,LinearLayout.LayoutParams(activity.dp(36),activity.dp(36)).apply {leftMargin=activity.dp(4);rightMargin=activity.dp(4)})
+        val actions = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
+        val panels = cluster()
+        for (icon in listOf(HeaderIcon.SIDEBAR_LEFT, HeaderIcon.PANEL, HeaderIcon.SIDEBAR_RIGHT)) panels.addView(mirroredButton(icon), LinearLayout.LayoutParams(activity.dp(36), activity.dp(34)))
+        actions.addView(panels,LinearLayout.LayoutParams(-2,activity.dp(38)).apply {rightMargin=activity.dp(4)})
+        selectionButton = iconButton(HeaderIcon.SELECT_TEXT, activity.getString(R.string.terminal_selection_mode)) { toggleSelectionMode() }
+        actions.addView(selectionButton, LinearLayout.LayoutParams(activity.dp(36), activity.dp(36)))
+        actions.addView(status, LinearLayout.LayoutParams(activity.dp(76), activity.dp(32)))
+        more=iconButton(HeaderIcon.MORE, activity.getString(R.string.header_unified_menu)) { showStatus() }
+        actions.addView(more, LinearLayout.LayoutParams(activity.dp(36), activity.dp(36)))
+        row.addView(actions, LinearLayout.LayoutParams(-2, -1))
         toolbar.addView(row, Toolbar.LayoutParams(-1, -1))
         row.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            val sizing = HeaderSizing.forWidth((row.width / activity.resources.displayMetrics.density).toInt())
-            compactStatus = sizing.compactStatus
-            val label = activity.getString(if (sizing.compactSearch) R.string.header_commands_compact else R.string.header_search)
+            val nextSizing = HeaderSizing.forWidth((row.width / activity.resources.displayMetrics.density).toInt())
+            val sizingChanged = nextSizing != currentSizing
+            currentSizing = nextSizing
+            compactStatus = currentSizing.compactStatus
+            val label = if (currentSizing.compactSearch) "" else activity.getString(R.string.header_search)
             if (search.text.toString() != label) search.text = label
             fun resize(view: View, width: Int) {
-                if (view.layoutParams.width != activity.dp(width)) {
-                    view.layoutParams = view.layoutParams.apply { this.width = activity.dp(width) }
-                }
+                if (view.layoutParams.width != activity.dp(width)) view.layoutParams = view.layoutParams.apply { this.width = activity.dp(width) }
             }
-            resize(search, sizing.searchWidth)
-            resize(status, sizing.statusWidth)
-            val showControls = row.width >= activity.dp(850)
-            controlsScroll.visibility = if (showControls) View.VISIBLE else View.GONE
-            updateStatus()
+            resize(search, currentSizing.searchWidth); resize(status, currentSizing.statusWidth)
+            home.visibility = if (currentSizing.showHome) View.VISIBLE else View.GONE
+            add.visibility = if (currentSizing.showAdd) View.VISIBLE else View.GONE
+            navigation.visibility = if (currentSizing.showNavigation) View.VISIBLE else View.GONE
+            panels.visibility = if (currentSizing.showPanels) View.VISIBLE else View.GONE
+            selectionButton.visibility = if (currentSizing.showSelection) View.VISIBLE else View.GONE
+            status.visibility = if (currentSizing.statusWidth > 0) View.VISIBLE else View.GONE
+            if (sizingChanged) { styleSearch(); updateStatus() }
             updateExclusions()
         }
+        mobileControls=MobileEditorControls(activity,root,editor,
+            files={editorActions.run(EditorActions.Action.FILES)},commands={editorActions.run(EditorActions.Action.COMMANDS)})
         applyPalette()
-        toolbar.layoutParams = toolbar.layoutParams.apply { height = activity.dp(44) }
+        toolbar.layoutParams = toolbar.layoutParams.apply { height = activity.dp(48) }
         configureCaption()
         activity.lifecycle.addObserver(this)
         refresh()
     }
 
+    private fun cluster() = LinearLayout(activity).apply {
+        gravity=Gravity.CENTER_VERTICAL
+        setPadding(activity.dp(3),activity.dp(2),activity.dp(3),activity.dp(2))
+        clusters += this
+    }
+
     private fun pill(color: Int, stroke: Int = Color.TRANSPARENT) = GradientDrawable().apply {
         setColor(color)
-        cornerRadius = activity.dp(6).toFloat()
+        cornerRadius = activity.dp(8).toFloat()
         setStroke(activity.dp(1), stroke)
     }
 
@@ -156,7 +190,7 @@ class WorkspaceHeader(
         text = label
         contentDescription = description
         tooltipText = description
-        textSize = 13f
+        textSize = 14f
         gravity = Gravity.CENTER
         maxLines = 1
         ellipsize = TextUtils.TruncateAt.END
@@ -165,6 +199,85 @@ class WorkspaceHeader(
         setTextColor(ink)
         background = RippleDrawable(ColorStateList.valueOf(0x337faaff), pill(Color.TRANSPARENT), null)
         setOnClickListener { action() }
+    }
+
+    private fun iconLabel(icon: HeaderIcon): String = activity.getString(when(icon) {
+        HeaderIcon.BACK -> R.string.header_history_back
+        HeaderIcon.FORWARD -> R.string.header_history_forward
+        HeaderIcon.SIDEBAR_LEFT -> R.string.header_primary_sidebar
+        HeaderIcon.PANEL -> R.string.header_bottom_panel
+        HeaderIcon.SIDEBAR_RIGHT -> R.string.header_secondary_sidebar
+        else -> R.string.header_unified_menu
+    })
+
+    private fun iconButton(icon: HeaderIcon, description: String, action: () -> Unit) = android.widget.ImageButton(activity).apply {
+        contentDescription = description; tooltipText = description
+        minimumWidth = 0; minimumHeight = 0
+        setPadding(activity.dp(8), activity.dp(8), activity.dp(8), activity.dp(8))
+        scaleType = android.widget.ImageView.ScaleType.CENTER
+        imageTintList = null
+        backgroundTintList = null
+        setImageDrawable(HeaderIconDrawable(icon, ink, activity.dp(18)))
+        background = RippleDrawable(ColorStateList.valueOf(0x337faaff), pill(Color.TRANSPARENT), null)
+        setOnClickListener { action() }
+        fixedIcons[this] = icon
+    }
+
+    private fun mirroredButton(icon: HeaderIcon): android.widget.ImageButton = iconButton(icon, iconLabel(icon)) {
+        if (HeaderActions.isLayout(icon)) {
+            titlebarBridge.clickLayout(icon)
+        } else mirroredControls.firstOrNull { HeaderActions.icon(it.icon) == icon && it.enabled }
+            ?.let { titlebarBridge.click(it) }
+    }.also { actionButtons[icon] = it }
+
+    private fun updateActions() {
+        mobileControls.refresh(titlebarBridge.layoutReady)
+        search.isEnabled=titlebarBridge.layoutReady
+        commandButton.isEnabled=titlebarBridge.layoutReady
+        search.alpha=if(search.isEnabled)1f else .45f
+        commandButton.alpha=if(commandButton.isEnabled)1f else .45f
+        actionButtons.forEach { (icon, button) ->
+            val control = mirroredControls.firstOrNull { HeaderActions.icon(it.icon) == icon && it.enabled }
+                ?: mirroredControls.firstOrNull { HeaderActions.icon(it.icon) == icon }
+            button.isEnabled = HeaderActions.available(icon, titlebarBridge.layoutReady, control?.enabled == true)
+            val selected = HeaderActions.isLayout(icon) && control != null && !control.icon.endsWith("-off") && !control.icon.contains("-off-layout-icon")
+            val presentation=Triple(button.isEnabled,selected,dark)
+            if(actionPresentations.put(icon,presentation)!=presentation) {
+                button.alpha=if(button.isEnabled)1f else .4f
+                button.isSelected=selected
+                button.setImageDrawable(HeaderIconDrawable(icon,if(selected)accent else ink,activity.dp(18)))
+                button.background=RippleDrawable(ColorStateList.valueOf(0x227faaff),pill(if(selected) {if(dark)Color.rgb(47,65,91) else Color.rgb(216,231,255)} else Color.TRANSPARENT),null)
+            }
+            val label = control?.label?.takeUnless { it.startsWith("codicon-") } ?: iconLabel(icon)
+            button.contentDescription = label
+            button.tooltipText = if (button.isEnabled) label else activity.getString(R.string.header_control_unavailable, iconLabel(icon))
+        }
+        val selecting = preferences.getBoolean("terminal_selection_mode", false)
+        if(selectionPresentation!=(selecting to dark)) {
+            selectionPresentation=selecting to dark
+            selectionButton.isSelected=selecting
+            selectionButton.setImageDrawable(HeaderIconDrawable(HeaderIcon.SELECT_TEXT,if(selecting)accent else ink,activity.dp(18)))
+            selectionButton.background=RippleDrawable(ColorStateList.valueOf(0x227faaff),pill(if(selecting) {if(dark)Color.rgb(47,65,91) else Color.rgb(216,231,255)} else Color.TRANSPARENT),null)
+        }
+        selectionButton.tooltipText = activity.getString(if (selecting) R.string.header_selection_on else R.string.header_selection_off)
+        selectionButton.contentDescription = selectionButton.tooltipText
+    }
+
+    private fun styleSearch() {
+        search.setTextColor(ink)
+        val icon = HeaderIconDrawable(HeaderIcon.SEARCH, ink, activity.dp(18)).apply { setBounds(0,0,intrinsicWidth,intrinsicHeight) }
+        search.setCompoundDrawablesRelative(icon, null, null, null)
+        search.compoundDrawablePadding = if (currentSizing.compactSearch) 0 else activity.dp(8)
+        search.gravity = if (currentSizing.compactSearch) Gravity.CENTER else Gravity.CENTER_VERTICAL
+        search.setPadding(activity.dp(if (currentSizing.compactSearch) 9 else 10),0,activity.dp(8),0)
+    }
+
+    private fun toggleSelectionMode() {
+        val enabled = !preferences.getBoolean("terminal_selection_mode", false)
+        preferences.edit().putBoolean("terminal_selection_mode", enabled).apply()
+        clipboardControls.selectionMode(enabled)
+        updateActions()
+        RuntimeState.store.changed()
     }
 
     private fun applyPalette() {
@@ -182,9 +295,14 @@ class WorkspaceHeader(
             override fun getOpacity() = android.graphics.PixelFormat.OPAQUE
         }
         toolbar.overflowIcon?.setTint(ink)
-        listOf(home, add, chooser, search).forEach { it.setTextColor(ink) }
+        actionPresentations.clear()
+        selectionPresentation=null
+        fixedIcons.forEach { (button, icon) -> button.setImageDrawable(HeaderIconDrawable(icon, ink, activity.dp(18))) }
+        clusters.forEach {it.background=pill(if(dark)Color.rgb(32,39,51) else Color.rgb(230,236,246))}
+        styleSearch()
+        updateActions()
         search.background = RippleDrawable(ColorStateList.valueOf(0x337faaff),
-            pill(if (dark) Color.rgb(48, 54, 65) else Color.WHITE, if (dark) Color.rgb(73, 80, 94) else Color.rgb(207, 214, 226)), null)
+            pill(if (dark) Color.rgb(33, 41, 55) else Color.WHITE, if (dark) Color.rgb(57, 70, 91) else Color.rgb(211, 222, 238)), null)
         status.background = RippleDrawable(ColorStateList.valueOf(0x337faaff), pill(Color.TRANSPARENT), null)
         if (Build.VERSION.SDK_INT >= 35) {
             val mask = WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND or WindowInsetsController.APPEARANCE_LIGHT_CAPTION_BARS or WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
@@ -203,16 +321,15 @@ class WorkspaceHeader(
     }
 
     private fun showWorkspaces() {
-        val windows = RuntimeState.store.snapshotWindows().filter { it.type == "SSH workspace" || it.type == "Web editor" }
-        val popup = PopupMenu(activity, chooser)
-        windows.forEachIndexed { index, window ->
-            popup.menu.add(0, index, index, "${window.title} · ${window.phase}").apply {
-                isCheckable = true
-                isChecked = window.id == RuntimeTracker.id(activity)
-            }
-        }
-        popup.setOnMenuItemClickListener { item -> focusWindow(windows[item.itemId].taskId); true }
-        popup.show()
+        val windows=RuntimeState.store.snapshotWindows().filter {it.type=="SSH workspace" || it.type=="Web editor"}
+        val ownId=RuntimeTracker.id(activity)
+        WorkspaceMenu(activity,dark).show(chooser,root.width,root.height-root.paddingTop-root.paddingBottom-toolbar.height,
+            activity.getString(R.string.header_all_workspaces),activity.getString(R.string.header_workspace_count,windows.size),
+            listOf(WorkspaceMenu.Action(activity.getString(R.string.new_window),HeaderIcon.ADD){newWindow()},
+                WorkspaceMenu.Action(activity.getString(R.string.connections),HeaderIcon.CONNECTIONS){connections()}),
+            listOf(WorkspaceMenu.Section(activity.getString(R.string.header_workspace_label),windows.map {window->
+                WorkspaceMenu.Action(window.title,HeaderIcon.WINDOW,window.phase,selected=window.id==ownId){if(window.id!=ownId)focusWindow(window.taskId)}
+            })))
     }
 
     private fun focusWindow(id: Int) {
@@ -228,64 +345,67 @@ class WorkspaceHeader(
     }
 
     private fun showStatus() {
-        val popup = PopupMenu(activity, status)
-        popup.menu.add(lastPhase).isEnabled = false
-        popup.menu.add(0, 1, 1, activity.getString(R.string.header_forward_count, forwardCount))
-        val editorMenu = popup.menu.addSubMenu(R.string.header_editor_menu)
-        editorMenu.add(0, 7, 0, R.string.header_file_search)
-        editorMenu.add(0, 2, 1, R.string.header_command_palette)
-        editorMenu.add(0, 3, 2, R.string.header_terminal)
-        val connectionMenu = popup.menu.addSubMenu(R.string.header_connection_menu)
-        connectionMenu.add(0, 1, 0, R.string.open_port_url)
-        connectionMenu.add(0, 4, 1, R.string.header_reconnect)
-        connectionMenu.add(0, 8, 2, R.string.reload)
-        connectionMenu.add(0, 9, 3, R.string.connections)
-        val windowMenu = popup.menu.addSubMenu(R.string.header_window_menu)
-        windowMenu.add(0, 10, 0, R.string.new_window)
-        windowMenu.add(0, 11, 1, R.string.header_all_workspaces)
-        windowMenu.add(0, 12, 2, R.string.header_back)
-        windowMenu.add(0, 6, 3, R.string.header_close_workspace)
-        val vsMenu = popup.menu.addSubMenu(R.string.header_vscode_controls)
-        mirroredControls.forEachIndexed { index, control ->
-            vsMenu.add(2, 1000 + index, index, control.label).isEnabled = control.enabled
-        }
-        popup.menu.add(0, 15, 5, R.string.header_merge_titlebar).apply {
-            isCheckable = true
-            isChecked = preferences.getBoolean("merge_titlebar", true)
-        }
-        popup.menu.add(0, 5, 6, R.string.header_dark).apply { isCheckable = true; isChecked = dark }
-        popup.menu.add(0, 13, 7, R.string.settings)
-        if (onDiagnostics != null) popup.menu.add(0, 14, 8, R.string.connection_diagnostics)
-        popup.setOnMenuItemClickListener {
-            if (it.groupId == 2) {
-                mirroredControls.getOrNull(it.itemId - 1000)?.let { control -> titlebarBridge.click(control) }
-                return@setOnMenuItemClickListener true
-            }
-            when (it.itemId) {
-                1 -> onPorts()
-                2 -> editorActions.run(EditorActions.Action.COMMANDS)
-                3 -> editorActions.run(EditorActions.Action.TERMINAL)
-                4 -> onReconnect()
-                5 -> {
-                    preferences.edit().putBoolean("dark", !dark).apply()
-                    RuntimeState.store.changed()
-                }
-                6 -> activity.finishAndRemoveTask()
-                7 -> editorActions.run(EditorActions.Action.FILES)
-                8 -> onReload()
-                9 -> connections()
-                10 -> newWindow()
-                11 -> showWorkspaces()
-                12 -> activity.onBackPressedDispatcher.onBackPressed()
-                13 -> onSettings()
-                14 -> onDiagnostics?.invoke()
-                15 -> {
-                    preferences.edit().putBoolean("merge_titlebar", !preferences.getBoolean("merge_titlebar", true)).apply()
-                    RuntimeState.store.changed()
-                }
-            }
-            true
-        }
+        fun label(id: Int) = activity.getString(id)
+        fun action(id: Int, icon: HeaderIcon, hint: String? = null, enabled: Boolean = true, run: () -> Unit) =
+            WorkspaceMenu.Action(label(id),icon,hint,enabled,run=run)
+        fun toggle(id: Int, icon: HeaderIcon, key: String, default: Boolean, run: () -> Unit) =
+            WorkspaceMenu.Action(label(id),icon,checked={preferences.getBoolean(key,default)},closeOnClick=false,run=run)
+        val ready=titlebarBridge.layoutReady
+        val sections=listOf(
+            WorkspaceMenu.Section(label(R.string.header_editor_menu),listOf(
+                action(R.string.header_primary_sidebar,HeaderIcon.SIDEBAR_LEFT,enabled=ready){titlebarBridge.clickLayout(HeaderIcon.SIDEBAR_LEFT)},
+                action(R.string.header_bottom_panel,HeaderIcon.PANEL,enabled=ready){titlebarBridge.clickLayout(HeaderIcon.PANEL)},
+                action(R.string.header_secondary_sidebar,HeaderIcon.SIDEBAR_RIGHT,enabled=ready){titlebarBridge.clickLayout(HeaderIcon.SIDEBAR_RIGHT)},
+                action(R.string.header_terminal,HeaderIcon.TERMINAL,enabled=ready){editorActions.run(EditorActions.Action.TERMINAL)},
+                toggle(R.string.header_selection_short,HeaderIcon.SELECT_TEXT,"terminal_selection_mode",false){toggleSelectionMode()},
+                action(R.string.copy_terminal_selection,HeaderIcon.COPY){clipboardControls.copyTerminalSelection()}
+            )),
+            WorkspaceMenu.Section(label(R.string.header_connection_menu),buildList {
+                onServerManagement?.let { add(action(R.string.server_management,HeaderIcon.PORT){it()}) }
+                addAll(listOf(
+                action(R.string.header_ports,HeaderIcon.PORT,activity.getString(R.string.header_forward_count,forwardCount)){onPorts()},
+                action(R.string.header_reconnect,HeaderIcon.RELOAD){onReconnect()},
+                action(R.string.reload,HeaderIcon.RELOAD){onReload()}
+                ))
+            }),
+            WorkspaceMenu.Section(label(R.string.header_window_menu),listOf(
+                action(R.string.new_window,HeaderIcon.ADD){newWindow()},
+                action(R.string.header_all_workspaces,HeaderIcon.WINDOW){showWorkspaces()},
+                action(R.string.connections,HeaderIcon.CONNECTIONS){connections()}
+            )),
+            WorkspaceMenu.Section(label(R.string.header_preferences),listOf(
+                WorkspaceMenu.Action(label(R.string.mobile_controls),HeaderIcon.TERMINAL,checked={mobileControls.visible},closeOnClick=false){mobileControls.toggle()},
+                action(R.string.mobile_automatic,HeaderIcon.SETTINGS){mobileControls.automatic()},
+                toggle(R.string.header_autocopy_short,HeaderIcon.COPY,"selection_copy",true){
+                    preferences.edit().putBoolean("selection_copy",!preferences.getBoolean("selection_copy",true)).apply();RuntimeState.store.changed()
+                },
+                toggle(R.string.header_merge_titlebar,HeaderIcon.WINDOW,"merge_titlebar",true){
+                    preferences.edit().putBoolean("merge_titlebar",!preferences.getBoolean("merge_titlebar",true)).apply();RuntimeState.store.changed()
+                },
+                WorkspaceMenu.Action(label(R.string.header_dark),HeaderIcon.THEME,checked={preferences.getBoolean("dark",true)}){
+                    preferences.edit().putBoolean("dark",!dark).apply();RuntimeState.store.changed()
+                },
+                action(R.string.settings,HeaderIcon.SETTINGS){onSettings()}
+            )),
+            WorkspaceMenu.Section(label(R.string.header_more_tools),buildList {
+                if(mirroredControls.isNotEmpty())add(action(R.string.header_vscode_controls,HeaderIcon.MORE){showVsControls()})
+                add(action(R.string.clipboard_diagnostics,HeaderIcon.INFO){clipboardControls.diagnostics()})
+                if(onDiagnostics!=null)add(action(R.string.connection_diagnostics,HeaderIcon.INFO){onDiagnostics.invoke()})
+                add(action(R.string.header_back,HeaderIcon.BACK){activity.onBackPressedDispatcher.onBackPressed()})
+                add(WorkspaceMenu.Action(label(R.string.header_close_workspace),HeaderIcon.CLOSE,destructive=true){activity.finishAndRemoveTask()})
+            })
+        )
+        WorkspaceMenu(activity,dark).show(more,root.width,root.height-root.paddingTop-root.paddingBottom-toolbar.height,currentWorkspaceTitle,
+            lastPhase+" · "+activity.getString(R.string.header_forward_count,forwardCount),
+            listOf(action(R.string.header_file_search,HeaderIcon.SEARCH,"Ctrl+P",ready){editorActions.run(EditorActions.Action.FILES)},
+                action(R.string.header_command_palette,HeaderIcon.COMMAND,"Ctrl+Shift+P",ready){editorActions.run(EditorActions.Action.COMMANDS)}),sections)
+    }
+
+    private fun showVsControls() {
+        val controls=mirroredControls.toList()
+        val popup=PopupMenu(activity,more)
+        controls.forEachIndexed {index,control->popup.menu.add(0,index,index,control.label).isEnabled=control.enabled}
+        popup.setOnMenuItemClickListener {item->controls.getOrNull(item.itemId)?.let{titlebarBridge.click(it)};true}
         popup.show()
     }
 
@@ -298,8 +418,15 @@ class WorkspaceHeader(
             else -> accent
         }
         val label = activity.getString(when { failed -> R.string.header_error; ready -> R.string.header_ready; else -> R.string.header_loading })
-        status.text = if (compactStatus) "●" else "●  $label  ▾"
-        status.setTextColor(color)
+        val presentation = Triple(label, color, compactStatus)
+        if (statusPresentation != presentation) {
+            statusPresentation = presentation
+            status.text = if (compactStatus) "" else label
+            val dot = HeaderIconDrawable(HeaderIcon.STATUS, color, activity.dp(16)).apply { setBounds(0,0,intrinsicWidth,intrinsicHeight) }
+            status.setCompoundDrawablesRelative(dot, null, null, null)
+            status.compoundDrawablePadding = if (compactStatus) 0 else activity.dp(2)
+            status.setTextColor(color)
+        }
         status.contentDescription = "$lastPhase · ${activity.getString(R.string.header_forward_count, forwardCount)}"
         status.tooltipText = status.contentDescription
     }
@@ -309,31 +436,18 @@ class WorkspaceHeader(
     }
 
     private fun refresh() {
+        clipboardControls.selectionMode(preferences.getBoolean("terminal_selection_mode", false))
         titlebarBridge.enabled = preferences.getBoolean("merge_titlebar", true)
         titlebarBridge.refresh { controls ->
             if (controls != mirroredControls || mirroredPalette != dark) {
                 mirroredControls = controls
                 mirroredPalette = dark
-                titleControls.removeAllViews()
-                controls.forEach { control ->
-                    val glyph = when {
-                        control.icon.contains("arrow-left") -> "←"
-                        control.icon.contains("arrow-right") -> "→"
-                        control.icon.contains("sidebar-left") -> "◧"
-                        control.icon.contains("sidebar-right") -> "◨"
-                        control.icon.contains("panel") -> "⬒"
-                        control.icon.contains("layout") -> "▥"
-                        control.icon.contains("menu") -> "☰"
-                        else -> control.label.take(2)
-                    }
-                    titleControls.addView(button(glyph, control.label) { titlebarBridge.click(control) }.apply {
-                        isEnabled = control.enabled
-                        alpha = if (control.enabled) 1f else 0.4f
-                    }, LinearLayout.LayoutParams(activity.dp(34), -1))
-                }
+                updateActions()
                 updateExclusions()
             }
+            updateActions()
         }
+        updateActions()
         val store = RuntimeState.store
         val forwards = store.snapshotForwards() // Also detects SSH sessions that have disconnected.
         val windows = store.snapshotWindows().filter { it.type == "SSH workspace" || it.type == "Web editor" }
@@ -341,6 +455,7 @@ class WorkspaceHeader(
         val own = windows.firstOrNull { it.id == ownId }
         val nextDark = preferences.getBoolean("dark", true)
         if (dark != nextDark) { dark = nextDark; applyPalette() }
+        currentWorkspaceTitle=own?.title ?: title
         lastPhase = own?.phase ?: activity.getString(R.string.header_starting)
         forwardCount = forwards.count { it.windowId == ownId }
         updateStatus()
@@ -357,19 +472,22 @@ class WorkspaceHeader(
             tabs.addView(button(label, activity.getString(R.string.header_switch_workspace, window.title)) {
                 if (!selected) focusWindow(window.taskId)
             }.apply {
-                minWidth = activity.dp(105)
-                maxWidth = activity.dp(190)
+                minWidth = activity.dp(96)
+                maxWidth = activity.dp(210)
                 setTypeface(null, if (selected) Typeface.BOLD else Typeface.NORMAL)
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
                 isSelected = selected
                 setTextColor(if (selected) ink else if (dark) Color.rgb(160, 170, 186) else Color.rgb(96, 108, 126))
                 background = RippleDrawable(ColorStateList.valueOf(0x337faaff),
-                    pill(if (selected) { if (dark) Color.rgb(55, 65, 82) else Color.WHITE } else Color.TRANSPARENT,
-                        if (selected) accent else Color.TRANSPARENT), null)
+                    pill(if (selected) { if (dark) Color.rgb(43, 56, 77) else Color.WHITE } else Color.TRANSPARENT,
+                        if (selected) {if(dark)Color.rgb(72,97,136) else Color.rgb(180,202,234)} else Color.TRANSPARENT), null)
+                val windowIcon=HeaderIconDrawable(HeaderIcon.WINDOW,if(selected)accent else ink,activity.dp(14)).apply{setBounds(0,0,intrinsicWidth,intrinsicHeight)}
+                setCompoundDrawablesRelative(windowIcon,null,null,null)
+                compoundDrawablePadding=activity.dp(7)
                 tooltipText = "${window.title} · ${window.type}"
 
-            }, LinearLayout.LayoutParams(-2, activity.dp(32)).apply { leftMargin = activity.dp(3); rightMargin = activity.dp(3) })
+            }, LinearLayout.LayoutParams(-2, activity.dp(34)).apply { leftMargin = activity.dp(2); rightMargin = activity.dp(2) })
         }
         tabs.post {
             for (index in 0 until tabs.childCount) {
@@ -381,7 +499,9 @@ class WorkspaceHeader(
     }
 
     private fun configureCaption() {
-        if (Build.VERSION.SDK_INT < 35) return
+        if (Build.VERSION.SDK_INT < 35) {
+            return
+        }
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(activity.window, false)
         root.setOnApplyWindowInsetsListener { _, insets ->
             val caption = insets.getInsets(WindowInsets.Type.captionBar())
@@ -393,7 +513,7 @@ class WorkspaceHeader(
             val top = if (integrated) maxOf(0, system.top - caption.top) else system.top
             root.setPadding(system.left, top, system.right, maxOf(system.bottom, insets.getInsets(WindowInsets.Type.ime()).bottom))
             val params = toolbar.layoutParams as LinearLayout.LayoutParams
-            val height = if (integrated) maxOf(activity.dp(44), caption.top) else activity.dp(44)
+            val height = if (integrated) maxOf(activity.dp(48), caption.top) else activity.dp(48)
             val left = if (integrated) maxOf(0, gap!!.first - system.left) else 0
             val right = if (integrated) maxOf(0, root.width - gap!!.last - 1 - system.right) else 0
             if (params.height != height || params.leftMargin != left || params.rightMargin != right) {
@@ -411,21 +531,33 @@ class WorkspaceHeader(
     }
 
     private fun updateExclusions() {
-        if (Build.VERSION.SDK_INT < 35) return
+        if (Build.VERSION.SDK_INT < 35) {
+            return
+        }
         val rects = mutableListOf<Rect>()
+        // getGlobalVisibleRect is relative to the View root, NOT to the display.
+        // Subtracting getLocationOnScreen shifts every exclusion when a freeform window moves.
+        val origin = Point()
+        if (!root.getGlobalVisibleRect(Rect(), origin)) return
         fun visit(view: View) {
-            if (view.visibility != View.VISIBLE) return
+            if (view.visibility != View.VISIBLE) {
+                return
+            }
             if (view.isClickable || view is HorizontalScrollView) {
                 val rect = Rect()
                 if (view.getGlobalVisibleRect(rect)) {
-                    val location = IntArray(2)
-                    root.getLocationOnScreen(location)
-                    rect.offset(-location[0], -location[1])
+                    rect.offset(-origin.x, -origin.y)
                     rects += rect
                 }
-            } else if (view is ViewGroup) for (i in 0 until view.childCount) visit(view.getChildAt(i))
+            } else if (view is ViewGroup) {
+                for (i in 0 until view.childCount) {
+                    visit(view.getChildAt(i))
+                }
+            }
         }
-        if (integrated) visit(toolbar)
+        if (integrated) {
+            visit(toolbar)
+        }
         root.systemGestureExclusionRects = rects
     }
 

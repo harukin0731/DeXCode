@@ -12,10 +12,14 @@ import kotlin.math.roundToInt
 class TitlebarBridge(private val view: WebView) {
     data class Control(val id: Int, val label: String, val icon: String, val enabled: Boolean)
     private val script by lazy { view.context.assets.open("titlebar-controls.js").bufferedReader().use { it.readText() } }
+    private val layoutScript by lazy { view.context.assets.open("layout-controls.js").bufferedReader().use { it.readText() } }
+    private var toggling = false
     private val frame get() = view.parent as? FrameLayout
     private var crop = 0
     private var pending = false
     private var page: String? = null
+    var layoutReady = false
+        private set
     var enabled = true
         set(value) { field = value; if (!value) applyCrop(0) }
 
@@ -25,15 +29,16 @@ class TitlebarBridge(private val view: WebView) {
 
     fun refresh(callback: (List<Control>) -> Unit) {
         if (!view.isAttachedToWindow) return
-        if (view.progress < 100) { applyCrop(0); callback(emptyList()); return }
+        if (view.progress < 100) { layoutReady = false; applyCrop(0); callback(emptyList()); return }
         if (pending) return
         pending = true
         val expectedUrl = view.url
-        view.evaluateJavascript("($script)('snapshot', 0)") { result ->
+        view.evaluateJavascript("($script)('snapshot', ${if (enabled) 1 else 0})") { result ->
             pending = false
-            if (view.url != expectedUrl || !view.isAttachedToWindow) { applyCrop(0); return@evaluateJavascript }
+            if (view.url != expectedUrl || !view.isAttachedToWindow) { layoutReady = false; applyCrop(0); return@evaluateJavascript }
             val snapshot = runCatching { JSONObject(JSONTokener(result).nextValue() as String) }.getOrNull()
             page = expectedUrl
+            layoutReady = snapshot?.optBoolean("ready", false) == true
             val cssWidth = snapshot?.optDouble("width", 0.0) ?: 0.0
             val cssHeight = snapshot?.optDouble("height", 0.0) ?: 0.0
             val controls = snapshot?.optJSONArray("controls")
@@ -52,9 +57,51 @@ class TitlebarBridge(private val view: WebView) {
     fun click(control: Control) {
         if (view.url != page || !control.enabled) return
         view.requestFocus()
+        val action = when (HeaderActions.icon(control.icon)) {
+            HeaderIcon.SIDEBAR_LEFT -> "sidebar"
+            HeaderIcon.PANEL -> "panel"
+            HeaderIcon.SIDEBAR_RIGHT -> "auxiliary"
+            else -> null
+        }
+        if (action != null) {
+            toggleLayout(action, control.id)
+            return
+        }
         view.evaluateJavascript("($script)('click', ${control.id})") { result ->
             if (result != "\"sent\"") Toast.makeText(view.context, R.string.header_action_unavailable, Toast.LENGTH_LONG).show()
         }
+    }
+
+    /** Fixed layout actions must work even when VS Code hides or changes its titlebar icons. */
+    fun clickLayout(icon: HeaderIcon) {
+        if (!layoutReady || view.url != page) return
+        val action = when (icon) {
+            HeaderIcon.SIDEBAR_LEFT -> "sidebar"
+            HeaderIcon.PANEL -> "panel"
+            HeaderIcon.SIDEBAR_RIGHT -> "auxiliary"
+            else -> return
+        }
+        view.requestFocus()
+        toggleLayout(action, 0)
+    }
+
+    private fun toggleLayout(action: String, id: Int) {
+        if (toggling) return
+        toggling = true
+        val expectedUrl = view.url
+        fun run(stage: Int) {
+            if (!view.isAttachedToWindow || view.url != expectedUrl) { toggling = false; return }
+            view.evaluateJavascript("($layoutScript)('$action', $stage, $id)") { result ->
+                if (view.url != expectedUrl) { toggling = false; return@evaluateJavascript }
+                if (result == "\"sent\"" && stage < 2) {
+                    view.postDelayed({ run(stage + 1) }, 300)
+                } else {
+                    toggling = false
+                    if (result != "\"ok\"") Toast.makeText(view.context, R.string.header_action_unavailable, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        view.post { run(0) }
     }
 
     private fun applyCrop(pixels: Int) {

@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync('app/src/main/assets/editor-actions.js', 'utf8');
 let cases = 0;
 function test(name, fn) { fn(); cases++; console.log('PASS:', name); }
-function fixture({ ready = true, button = true, input = false, hidden = false, responds = true } = {}) {
+function fixture({ ready = true, button = true, input = false, hidden = false, responds = true, modern = false, keybindings = true } = {}) {
     const events = [];
     let opened = input, terminal = false, clicks = 0;
     class Input { constructor() { this._value = 'old query'; } }
@@ -13,18 +13,18 @@ function fixture({ ready = true, button = true, input = false, hidden = false, r
         getClientRects: () => opened && !hidden ? [{}] : [],
         dispatchEvent: e => { events.push(e); return true; }, focus() { this.focused = true; }
     });
-    const opener = { getClientRects: () => [{}], click() { clicks++; if (responds) opened = true; } };
+    const opener = { getClientRects: () => [{}], dispatchEvent(event) { assert.equal(event.type,'click'); assert.ok(event.view); clicks++; if (responds) opened = true; } };
     const pane = { getClientRects: () => terminal ? [{}] : [] };
     const workbench = {
         getClientRects: () => [{}], contains: e => e === field,
         querySelectorAll(selector) {
             if (selector.includes('quick-input-widget')) return [field];
             if (selector.includes('.terminal')) return [pane];
-            return button ? [opener] : [];
+            return button && (!modern || selector.includes('.agent-status-input-area')) ? [opener] : [];
         },
         dispatchEvent(e) {
             events.push(e);
-            if (!responds || e.type !== 'keydown') return true;
+            if (!responds || !keybindings || e.type !== 'keydown') return true;
             if (e.code === 'F1' || e.code === 'KeyP') opened = true;
             if (e.code === 'Backquote') terminal = !terminal;
             return true;
@@ -33,7 +33,7 @@ function fixture({ ready = true, button = true, input = false, hidden = false, r
     class Event { constructor(type, fields = {}) { this.type = type; Object.assign(this, fields); } }
     const context = { document: { querySelector: () => ready ? workbench : null, activeElement: {} },
         getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
-        HTMLInputElement: Input, Event, KeyboardEvent: Event, window: {} };
+        HTMLInputElement: Input, Event, KeyboardEvent: Event, MouseEvent: Event, window: {} };
     const run = vm.runInNewContext(source, context);
     return { run, events, field, clicks: () => clicks };
 }
@@ -75,5 +75,13 @@ test('terminal requires an observed visibility change', () => {
     const f = fixture(); f.run('terminal', 0); assert.equal(f.run('terminal', 2), 'ok');
     const ignored = fixture({ responds: false }); ignored.run('terminal', 0);
     assert.equal(ignored.run('terminal', 2), 'unavailable');
+});
+test('modern agent-status search opens command palette without synthetic shortcuts', () => {
+    const f=fixture({modern:true,keybindings:false});
+    assert.equal(f.run('commands',0),'sent');
+    assert.equal(f.clicks(),1);
+    assert.equal(f.run('commands',2),'ok');
+    assert.equal(f.field.value,'>');
+    assert.equal(f.events.some(e=>e.type==='keydown'),false);
 });
 console.log(`${cases} editor-control checks passed`);
