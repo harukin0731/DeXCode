@@ -60,3 +60,8 @@ Desktop.ini
 
 # Keep Gradle wrapper files and the explicitly documented synthetic SSH test
 # fixtures under app/src/test/resources/ssh/ in version control.
+
+# Local agent chat attachments (screenshots) and Python bytecode caches
+/.codex-attachments/
+__pycache__/
+*.pyc
