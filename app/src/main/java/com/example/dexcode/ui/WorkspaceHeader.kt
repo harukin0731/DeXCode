@@ -45,6 +45,7 @@ class WorkspaceHeader(
     private val onReload: () -> Unit,
     private val onSettings: () -> Unit,
     private val onDiagnostics: (() -> Unit)? = null,
+    private val onOpenTunnelInBrowser: (() -> Unit)? = null,
     private val onProjectFiles: (() -> Unit)? = null,
     private val onServerManagement: (() -> Unit)? = null,
     private val editor: () -> WebView,
@@ -409,6 +410,9 @@ class WorkspaceHeader(
             }
             add(menuAction(R.string.header_reconnect, HeaderIcon.CONNECTIONS) { onReconnect() })
             add(menuAction(R.string.reload, HeaderIcon.RELOAD) { onReload() })
+            onOpenTunnelInBrowser?.let { open ->
+                add(menuAction(R.string.open_in_browser, HeaderIcon.FORWARD, run = open))
+            }
             onDiagnostics?.let { diagnose ->
                 add(menuAction(R.string.connection_diagnostics, HeaderIcon.INFO, run = diagnose))
             }

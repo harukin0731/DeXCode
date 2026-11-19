@@ -267,4 +267,7 @@
     <string name="home_add_url">WebエディターのURLを追加</string>
     <string name="home_previews">プレビューとポート転送</string>
     <string name="home_open_preview">プレビューを開く</string>
+    <string name="tunnel_test_profile">別プロファイルで試す</string>
+    <string name="tunnel_standard_agent">標準WebViewで試す</string>
+    <string name="tunnel_bare_webview">拡張なしで接続</string>
 </resources>

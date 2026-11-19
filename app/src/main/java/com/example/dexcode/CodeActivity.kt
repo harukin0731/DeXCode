@@ -108,7 +108,7 @@ class CodeActivity : AppCompatActivity() {
         toolbar.minimumHeight = dp(40)
         toolbar.setContentInsetsRelative(dp(4), dp(4))
         root.addView(toolbar, LinearLayout.LayoutParams(-1, dp(40)))
-        setSupportActionBar(toolbar)
+        if (!usesBareTunnel()) setSupportActionBar(toolbar)
 
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
@@ -121,13 +121,27 @@ class CodeActivity : AppCompatActivity() {
         webContainer.addView(webView, FrameLayout.LayoutParams(-1, -1))
         root.addView(webContainer, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
-        com.example.dexcode.ui.WorkspaceHeader(this, root, toolbar, connection.name,
-            onPorts = { showOpenPortDialog() },
-            onReconnect = { webView.reload() },
-            onReload = { webView.reload() },
-            onSettings = { showSettings() },
-            onDiagnostics = { showDiagnostics() },
-        ) { webView }
+        if (usesBareTunnel()) {
+            toolbar.menu.add(R.string.connection_diagnostics).setOnMenuItemClickListener {
+                showDiagnostics()
+                true
+            }
+            toolbar.menu.add(R.string.reload).setOnMenuItemClickListener {
+                webView.reload()
+                true
+            }
+        } else {
+            com.example.dexcode.ui.WorkspaceHeader(this, root, toolbar, connection.name,
+                onPorts = { showOpenPortDialog() },
+                onReconnect = { webView.reload() },
+                onReload = { webView.reload() },
+                onSettings = { showSettings() },
+                onDiagnostics = { showDiagnostics() },
+                onOpenTunnelInBrowser = if (UrlUtils.isVsCodeTunnelUrl(connection.url)) {
+                    { openInBrowser(connection.url) }
+                } else null,
+            ) { webView }
+        }
 
         val restoredState = savedInstanceState?.let { webView.restoreState(it) }
         if (restoredState == null) {
@@ -153,11 +167,39 @@ class CodeActivity : AppCompatActivity() {
 
     private fun createWebView(isPopup: Boolean = false): WebView {
         val view = DesktopWebView(this)
+        if (usesTunnelTestProfile()) {
+            androidx.webkit.WebViewCompat.setProfile(view, "dexcode-tunnel-test")
+        }
         var pageError: String? = null
         val clipboardBridge = WebViewSettings.apply(
             view,
             initialAllowedUrl = connection.url,
+            desktopUserAgent = !usesStandardTunnelAgent(),
+            installClipboard = !usesBareTunnel(),
         )
+        if (!isPopup && UrlUtils.isVsCodeTunnelUrl(connection.url) &&
+            androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)
+        ) {
+            // WebView can enforce the parent COEP while reporting crossOriginIsolated=false.
+            // Request the official CDN variant with the matching policy on the extension frame.
+            val script = assets.open("tunnel-extension-frame-coep.js").bufferedReader().use { it.readText() }
+            androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                view, script, setOf("https://vscode.dev", "https://insiders.vscode.dev"),
+            )
+        }
+        if (!isPopup && !usesBareTunnel() && UrlUtils.isVsCodeTunnelUrl(connection.url) &&
+            androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)
+        ) {
+            val script = assets.open("tunnel-transport-diagnostics.js").bufferedReader().use { it.readText() }
+            androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                view, script, setOf("https://vscode.dev", "https://insiders.vscode.dev"),
+            )
+            val frameScript = assets.open("tunnel-extension-frame-diagnostics.js").bufferedReader().use { it.readText() }
+            androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                view, frameScript,
+                setOf("https://*.vscode-cdn.net", "https://vscode.dev", "https://insiders.vscode.dev"),
+            )
+        }
         view.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView,
@@ -195,8 +237,10 @@ class CodeActivity : AppCompatActivity() {
                 if (!isPopup) RuntimeTracker.phase(this@CodeActivity, pageError ?: "Page loaded")
                 diagnostics.record(if (isPopup) "POPUP FINISH" else "PAGE FINISH", url)
                 clipboardBridge.setPageUrl(url)
-                view.evaluateJavascript(NativeClipboardBridge.INSTALL_SCRIPT, null)
-                downloads.install(view)
+                if (!usesBareTunnel()) {
+                    view.evaluateJavascript(NativeClipboardBridge.INSTALL_SCRIPT, null)
+                    downloads.install(view)
+                }
                 progress.visibility = View.GONE
                 bridgeVsCodeCallback(view, url)
                 super.onPageFinished(view, url)
@@ -249,17 +293,27 @@ class CodeActivity : AppCompatActivity() {
             }
         }
         view.webChromeClient = createChromeClient()
-        downloads.attach(view)
+        if (!usesBareTunnel()) downloads.attach(view)
         return view
     }
 
     private fun createChromeClient(): WebChromeClient = object : WebChromeClient() {
         override fun onConsoleMessage(message: ConsoleMessage): Boolean {
             if (message.messageLevel() in setOf(ConsoleMessage.MessageLevel.ERROR, ConsoleMessage.MessageLevel.WARNING)) {
-                val text = message.message().lowercase()
-                val category = listOf("websocket", "cors", "fetch", "network", "crypto", "decrypt", "msal", "broadcastchannel", "timeout", "typeerror", "referenceerror")
-                    .firstOrNull { it in text } ?: "other"
-                diagnostics.record("JS ${message.messageLevel()} category=$category", message.sourceId())
+                val stage = message.message().removePrefix("DEXCODE_EXT_FRAME ")
+                if (stage != message.message() && stage in setOf(
+                        "document-start", "secure-crypto", "document-has-script", "document-no-script",
+                        "parent-bootstrap", "worker-constructor", "worker-constructor-error",
+                        "worker-error", "worker-message", "script-error", "script-rejection",
+                        "csp-script-src", "csp-script-src-elem", "csp-worker-src", "csp-child-src",
+                        "csp-connect-src", "csp-default-src", "csp-other",
+                    )
+                ) {
+                    diagnostics.record("EXT FRAME $stage")
+                    return true
+                }
+                val detail = ConnectionDiagnostics.consoleDetails(message.message())
+                diagnostics.record("JS ${message.messageLevel()} $detail line=${message.lineNumber()}", message.sourceId())
                 return true
             }
             return super.onConsoleMessage(message)
@@ -658,6 +712,25 @@ class CodeActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun usesTunnelTestProfile(): Boolean =
+        intent.getBooleanExtra("tunnel_test_profile", false) && UrlUtils.isVsCodeTunnelUrl(connection.url) &&
+            androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.MULTI_PROFILE)
+
+    private fun usesStandardTunnelAgent(): Boolean =
+        usesTunnelTestProfile() && intent.getBooleanExtra("tunnel_standard_agent", false)
+
+    private fun usesBareTunnel(): Boolean =
+        usesStandardTunnelAgent() && intent.getBooleanExtra("tunnel_bare_webview", false)
+
+    private fun openTunnelTest(standardAgent: Boolean, bare: Boolean = false) {
+        startActivity(Intent(this, CodeActivity::class.java)
+            .putExtra(EXTRA_CONNECTION_ID, connection.id)
+            .putExtra("tunnel_test_profile", true)
+            .putExtra("tunnel_standard_agent", standardAgent)
+            .putExtra("tunnel_bare_webview", bare)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK))
+    }
+
     private fun showDiagnostics() {
         webView.evaluateJavascript(ConnectionDiagnostics.SNAPSHOT_SCRIPT) { encoded ->
             val snapshot = runCatching {
@@ -666,17 +739,28 @@ class CodeActivity : AppCompatActivity() {
             }.getOrNull()
             val state = snapshot?.optString("readyState")
                 ?.takeIf { it in setOf("loading", "interactive", "complete") } ?: "unknown"
-            val capabilities = listOf("secureContext", "online", "crypto", "webSocket", "broadcastChannel", "serviceWorker", "serviceWorkerControlled", "workbench", "splash")
+            val capabilities = listOf("secureContext", "online", "crypto", "webSocket", "broadcastChannel", "serviceWorker", "serviceWorkerControlled", "workbench", "splash", "crossOriginIsolated", "worker", "extensionHostFrame")
                 .joinToString("\n") { "$it=${snapshot?.optBoolean(it) ?: false}" }
+            val transport = snapshot?.optJSONObject("transport")?.let { counters ->
+                listOf("attempted", "opened", "errors", "closed", "abnormal", "lastCloseCode")
+                    .joinToString(" ") { key -> "$key=${counters.optInt(key)}" }
+            } ?: "unavailable"
+            val extensionHost = snapshot?.optJSONObject("extensionHostStartup")?.let { counters ->
+                listOf("frameLoads", "frameErrors", "bootstrap", "portReady", "frameReportedError",
+                    "originCheck", "moduleFetch", "policy")
+                    .joinToString(" ") { key -> "$key=${counters.optInt(key)}" }
+            } ?: "unavailable"
             val version = androidx.webkit.WebViewCompat.getCurrentWebViewPackage(this)?.versionName ?: "unknown"
-            val report = "WebView=$version\nPage=${ConnectionDiagnostics.safeTarget(webView.url.orEmpty())}\nreadyState=$state\n$capabilities\n\n${diagnostics.report()}"
+            val baseReport = "WebView=$version\nTestProfile=${usesTunnelTestProfile()}\nStandardUserAgent=${usesStandardTunnelAgent()}\nBareWebView=${usesBareTunnel()}\nPage=${ConnectionDiagnostics.safeTarget(webView.url.orEmpty())}\nreadyState=$state\n$capabilities\nwebSocketWindow=$transport\nextensionHostStartup=$extensionHost\n\n${diagnostics.report()}"
+            val resource = snapshot?.optString("extensionHostResource").orEmpty()
+            var report = baseReport
             val text = TextView(this).apply {
                 setText(report)
                 setTextIsSelectable(true)
                 typeface = android.graphics.Typeface.MONOSPACE
                 setPadding(dp(16), dp(8), dp(16), dp(8))
             }
-            AlertDialog.Builder(this)
+            val dialog = AlertDialog.Builder(this)
                 .setTitle(R.string.connection_diagnostics)
                 .setView(ScrollView(this).apply { addView(text) })
                 .setNeutralButton(R.string.copy_diagnostics) { _, _ ->
@@ -684,7 +768,28 @@ class CodeActivity : AppCompatActivity() {
                         .setPrimaryClip(android.content.ClipData.newPlainText("DeXCode diagnostics", report))
                 }
                 .setPositiveButton(android.R.string.ok, null)
+                .apply {
+                    if (!usesTunnelTestProfile() && UrlUtils.isVsCodeTunnelUrl(connection.url) &&
+                        androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.MULTI_PROFILE)
+                    ) {
+                        setNegativeButton(R.string.tunnel_bare_webview) { _, _ -> openTunnelTest(true, bare = true) }
+                    } else if (usesTunnelTestProfile() && !usesBareTunnel()) {
+                        setNegativeButton(R.string.tunnel_bare_webview) { _, _ -> openTunnelTest(true, bare = true) }
+                    }
+                }
                 .show()
+            if (UrlUtils.isVsCodeTunnelUrl(connection.url) && resource.isNotEmpty()) {
+                text.append("\nextensionHostProbe=running")
+                Thread {
+                    val outcome = ConnectionDiagnostics.probeExtensionHost(resource)
+                    runOnUiThread {
+                        if (dialog.isShowing && !isDestroyed) {
+                            report = "$baseReport\nextensionHostProbe=$outcome"
+                            text.text = report
+                        }
+                    }
+                }.start()
+            }
         }
     }
 

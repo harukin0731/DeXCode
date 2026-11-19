@@ -267,4 +267,7 @@
     <string name="home_add_url">Add a web editor URL</string>
     <string name="home_previews">Previews and port forwards</string>
     <string name="home_open_preview">Open preview</string>
+    <string name="tunnel_test_profile">Try separate profile</string>
+    <string name="tunnel_standard_agent">Try standard WebView</string>
+    <string name="tunnel_bare_webview">Connect without app enhancements</string>
 </resources>

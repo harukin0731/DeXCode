@@ -17,6 +17,8 @@ object WebViewSettings {
         webView: WebView,
         initialAllowedUrl: String? = null,
         allowLocalhost: Boolean = false,
+        desktopUserAgent: Boolean = true,
+        installClipboard: Boolean = true,
     ): NativeClipboardBridge {
         NativeClipboardBridge.loadScript(webView.context)
         webView.setBackgroundColor(Color.WHITE)
@@ -39,11 +41,13 @@ object WebViewSettings {
             // DeX is a desktop-style target. The Android WebView UA makes VS Code Web
             // select its mobile path, which can omit the desktop workbench and remote UI.
             // Keep the embedded Chromium version so sites still receive a realistic UA.
-            val chromeToken = Regex("Chrome/[0-9.]+").find(userAgentString)?.value
-                ?: "Chrome/131.0.0.0"
-            userAgentString =
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
-                    "(KHTML, like Gecko) $chromeToken Safari/537.36 DeXCode/0.1"
+            if (desktopUserAgent) {
+                val chromeToken = Regex("Chrome/[0-9.]+").find(userAgentString)?.value
+                    ?: "Chrome/131.0.0.0"
+                userAgentString =
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+                        "(KHTML, like Gecko) $chromeToken Safari/537.36 DeXCode/0.1"
+            }
         }
 
         val cookies = CookieManager.getInstance()
@@ -58,7 +62,7 @@ object WebViewSettings {
             allowLocalhost,
         ).also {
             bridges[webView] = it
-            it.attach(webView)
+            if (installClipboard) it.attach(webView)
         }
     }
 }
