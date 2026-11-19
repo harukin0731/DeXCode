@@ -177,6 +177,8 @@ class MainActivity : AppCompatActivity() {
         renderConnections()
     }
 
+    private var showRunning = false
+
     private fun renderConnections() {
         val colors=surface
         renderedDark=colors.dark
@@ -208,10 +210,14 @@ class MainActivity : AppCompatActivity() {
         root.addView(search,LinearLayout.LayoutParams(-1,dp(48)).apply {
             leftMargin=dp(12);rightMargin=dp(12);topMargin=dp(8);bottomMargin=dp(8)
         })
-        homeRunning=colors.button(getString(R.string.home_running_short)) {
-            homeListScroll?.smoothScrollTo(0,runtimeSection.top)
-        }.apply {visibility=View.GONE}
-        root.addView(homeRunning,LinearLayout.LayoutParams(-1,dp(48)).apply {leftMargin=dp(12);rightMargin=dp(12);bottomMargin=dp(8)})
+        val connectionsTab = colors.button(getString(R.string.saved_servers)) { }
+        val runningTab = colors.button(getString(R.string.home_running_short)) { }
+        homeRunning = runningTab
+        root.addView(LinearLayout(this).apply {
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            addView(connectionsTab, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
+            addView(runningTab, LinearLayout.LayoutParams(0, -2, 1f))
+        }, 1, LinearLayout.LayoutParams(-1, -2))
         val scroll=ScrollView(this).apply {isFillViewport=true}
         homeListScroll=scroll
         list=LinearLayout(this).apply {
@@ -231,11 +237,6 @@ class MainActivity : AppCompatActivity() {
             isAppearanceLightNavigationBars=!colors.dark
         }
         androidx.core.view.ViewCompat.requestApplyInsets(root)
-        if(resources.configuration.screenWidthDp>=600) {
-            list.addView(colors.label(getString(R.string.home_title),26f).apply {setTypeface(null,android.graphics.Typeface.BOLD)})
-            list.addView(colors.label(getString(R.string.home_description),13f,true).apply {setPadding(0,dp(4),0,dp(16))})
-        }
-        list.addView(colors.label(getString(R.string.saved_servers),15f).apply {setTypeface(null,android.graphics.Typeface.BOLD)},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=dp(8)})
         savedRows=LinearLayout(this).apply {orientation=LinearLayout.VERTICAL}
         list.addView(savedRows)
         lastConnections=null
@@ -246,6 +247,25 @@ class MainActivity : AppCompatActivity() {
             override fun afterTextChanged(s:android.text.Editable?)=Unit
         })
         addActiveWindowSection()
+        fun showPage(running: Boolean) {
+            showRunning = running
+            savedRows.visibility = if (running) View.GONE else View.VISIBLE
+            runtimeSection.visibility = if (running) View.VISIBLE else View.GONE
+            search.visibility = if (!running && store.getAll().isNotEmpty()) View.VISIBLE else View.GONE
+            connectionsTab.isSelected = !running
+            runningTab.isSelected = running
+            connectionsTab.background = colors.ripple(if (running) colors.card else colors.line)
+            runningTab.background = colors.ripple(if (running) colors.line else colors.card)
+            scroll.scrollTo(0, 0)
+        }
+        connectionsTab.setOnClickListener { showPage(false) }
+        runningTab.setOnClickListener {
+            getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                ?.hideSoftInputFromWindow(search.windowToken, 0)
+            root.requestFocus()
+            showPage(true)
+        }
+        showPage(showRunning)
         root.requestFocus()
     }
 
@@ -270,11 +290,29 @@ class MainActivity : AppCompatActivity() {
         lastConnections = connections
         savedRows.removeAllViews()
         if (connections.isEmpty()) {
-            savedRows.addView(TextView(this).apply {
-                text = getString(if(filterQuery.isBlank())R.string.no_connections else R.string.home_no_matches)
-                setTextColor(surface.muted)
-                setPadding(0, dp(28), 0, dp(28))
-            })
+            if (store.getAll().isEmpty()) {
+                val colors = surface
+                savedRows.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = colors.shape()
+                    setPadding(dp(20), dp(20), dp(20), dp(20))
+                    addView(colors.label(getString(R.string.home_start_title), 21f).apply {
+                        setTypeface(null, android.graphics.Typeface.BOLD)
+                    })
+                    addView(colors.label(getString(R.string.home_start_description), 14f, true),
+                        LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8); bottomMargin = dp(18) })
+                    addView(colors.button(getString(R.string.home_add_ssh), primary = true) {
+                        showEditor(null, Kind.SSH)
+                    })
+                    addView(colors.button(getString(R.string.home_add_url)) {
+                        showEditor(null, Kind.WEB)
+                    }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+                })
+            } else {
+                savedRows.addView(surface.label(getString(R.string.home_no_matches), 14f, true).apply {
+                    setPadding(0, dp(24), 0, dp(24))
+                })
+            }
         } else connections.sortedWith(compareByDescending<Connection> { it.lastUsedAt }
             .thenBy { it.name.lowercase(Locale.getDefault()) }).forEach { addConnectionRow(it) }
     }
@@ -298,8 +336,8 @@ class MainActivity : AppCompatActivity() {
         val taskIds = tasks.mapNotNull { runCatching { taskIdOf(it.taskInfo) }.getOrNull() }.toSet()
         val windows = RuntimeState.store.snapshotWindows().filter { it.taskId in taskIds }
         homeRunning?.apply {
-            visibility=if(windows.isNotEmpty() || forwards.isNotEmpty())View.VISIBLE else View.GONE
-            text=getString(R.string.home_running_summary,windows.size,forwards.size)
+            contentDescription = getString(R.string.home_running_short) + " · " +
+                getString(R.string.home_running_summary, windows.size, forwards.size)
         }
         val snapshot = windows to forwards
         if (snapshot == lastRuntime) return
@@ -317,7 +355,6 @@ class MainActivity : AppCompatActivity() {
             })
         }
         heading(R.string.active_windows)
-        note(getString(R.string.live_status_hint))
         if (windows.isEmpty()) note(getString(R.string.no_active_windows))
         windows.forEach { window ->
             val row = runtimeRow("${window.title} • ${window.type}", "${window.visibility} • ${window.phase}")
@@ -332,7 +369,7 @@ class MainActivity : AppCompatActivity() {
             })
             runtimeSection.addView(row)
         }
-        heading(R.string.active_forwards)
+        heading(R.string.home_previews)
         if (forwards.isEmpty()) note(getString(R.string.no_active_forwards))
         forwards.forEach { forward ->
             val detail = when {
@@ -342,6 +379,9 @@ class MainActivity : AppCompatActivity() {
             }
             val fixedLabel = if (forward.fixed) " • ${getString(R.string.fixed_port_label)}" else ""
             val row = runtimeRow(forward.connectionName, "$detail$fixedLabel\n${forward.url}")
+            if (!forward.editor) row.addView(surface.button(getString(R.string.home_open_preview)) {
+                startActivity(PortActivity.intent(this@MainActivity, forward.url, forward.connectionName))
+            })
             row.addView(Button(this).apply {
                 text = getString(R.string.copy_address); isAllCaps = false;setTextColor(surface.accent);backgroundTintList=android.content.res.ColorStateList.valueOf(surface.card)
                 setOnClickListener { copyForwardUrl(this@MainActivity, forward.url) }
@@ -363,6 +403,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun runtimeRow(titleValue: String, detailValue: String): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
+        orientation = LinearLayout.VERTICAL
         gravity = Gravity.START
         background = surface.shape()
         setPadding(dp(10), dp(6), dp(4), dp(6))
@@ -376,49 +417,52 @@ class MainActivity : AppCompatActivity() {
 
     private fun addConnectionRow(connection: Connection) {
         val colors=surface
-        val row=LinearLayout(this).apply {
-            gravity=Gravity.CENTER_VERTICAL
-            background=colors.ripple()
-            minimumHeight=dp(80)
-            setPadding(dp(12),dp(10),dp(4),dp(10))
-            isFocusable=true
-            setOnClickListener {openConnection(connection)}
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = colors.shape()
+            setPadding(dp(14), dp(12), dp(14), dp(12))
         }
-        val icon=android.widget.ImageView(this).apply {
-            setImageDrawable(com.example.dexcode.ui.HeaderIconDrawable(if(connection.kind==Kind.SSH)com.example.dexcode.ui.HeaderIcon.TERMINAL else com.example.dexcode.ui.HeaderIcon.WINDOW,colors.accent,dp(22)))
-            background=colors.shape(if(colors.dark)Color.rgb(39,54,76) else Color.rgb(230,239,253),12,false)
-        }
-        row.addView(icon,LinearLayout.LayoutParams(dp(40),dp(40)).apply {rightMargin=dp(10)})
-        val details=LinearLayout(this).apply {orientation=LinearLayout.VERTICAL}
-        val nameRow=LinearLayout(this).apply {gravity=Gravity.CENTER_VERTICAL}
-        nameRow.addView(colors.label(connection.name,16f).apply {
-            setTypeface(null,android.graphics.Typeface.BOLD)
-            setSingleLine(true)
-            ellipsize=android.text.TextUtils.TruncateAt.END
-        },LinearLayout.LayoutParams(0,-2,1f))
-        nameRow.addView(colors.label(if(connection.kind==Kind.SSH)"SSH" else "WEB",10f,true).apply {setPadding(dp(6),0,0,0)})
-        details.addView(nameRow)
-        fun metadata(value:String,size:Float) {
-            details.addView(colors.label(value,size,true).apply {
-                setSingleLine(true)
-                ellipsize=android.text.TextUtils.TruncateAt.MIDDLE
-            },LinearLayout.LayoutParams(-1,-2).apply {topMargin=dp(3)})
-        }
-        if(connection.kind==Kind.SSH) {
-            metadata("${connection.sshUsername}@${connection.sshHost}:${connection.sshPort}",12f)
-            metadata(connection.workspacePath.ifBlank {"~"},12f)
-        } else metadata(ConnectionDiagnostics.safeTarget(connection.url).substringBefore(" ("),13f)
-        row.addView(details,LinearLayout.LayoutParams(0,-2,1f))
-        row.addView(android.widget.ImageButton(this).apply {
-            contentDescription=getString(R.string.edit)+" "+connection.name
-            setImageDrawable(com.example.dexcode.ui.HeaderIconDrawable(com.example.dexcode.ui.HeaderIcon.SETTINGS,colors.muted,dp(19)))
-            background=colors.ripple()
-            setOnClickListener {showEditor(connection)}
-        },LinearLayout.LayoutParams(dp(48),dp(48)))
+        row.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(colors.label(connection.name, 17f).apply {
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(android.widget.ImageButton(this@MainActivity).apply {
+                contentDescription = getString(R.string.edit) + " " + connection.name
+                tooltipText = contentDescription
+                scaleType = android.widget.ImageView.ScaleType.CENTER
+                setImageDrawable(com.example.dexcode.ui.HeaderIconDrawable(
+                    com.example.dexcode.ui.HeaderIcon.EDIT, colors.muted, dp(20),
+                ))
+                background = colors.ripple()
+                setOnClickListener { showEditor(connection) }
+            }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        })
+        val target = if (connection.kind == Kind.SSH) {
+            val folder = connection.workspacePath.ifBlank { "~" }
+            "${connection.sshUsername}@${connection.sshHost} · $folder"
+        } else ConnectionDiagnostics.safeTarget(connection.url).substringBefore(" (")
+        row.addView(colors.label(target, 12f, true).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+        })
+        row.addView(LinearLayout(this).apply {
+            val open = if (connection.kind == Kind.SSH) R.string.home_open_editor else R.string.home_open_web
+            addView(colors.button(getString(open), primary = true) { openConnection(connection) }
+                .apply { setPadding(dp(6), 0, dp(6), 0) },
+                LinearLayout.LayoutParams(0, -2, 1f))
+            if (connection.kind == Kind.SSH) {
+                addView(colors.button(getString(R.string.home_open_files)) { ProjectFilesActivity.open(this@MainActivity, connection.id) }
+                    .apply { setPadding(dp(6), 0, dp(6), 0) },
+                    LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
+            }
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
         savedRows.addView(row,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=dp(8)})
     }
 
-    private fun showEditor(existing: Connection?) {
+    private fun showEditor(existing: Connection?, initialKind: Kind = Kind.WEB) {
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(4), dp(22), 0)
@@ -439,7 +483,7 @@ class MainActivity : AppCompatActivity() {
             setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         }
         kindSpinner.adapter = kindAdapter
-        kindSpinner.setSelection(if (existing?.kind == Kind.SSH) 1 else 0)
+        kindSpinner.setSelection(if ((existing?.kind ?: initialKind) == Kind.SSH) 1 else 0)
 
         val urlInput = EditText(this).apply {
             hint = getString(R.string.url_hint)
@@ -504,11 +548,8 @@ class MainActivity : AppCompatActivity() {
         val sshFields = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(sshHostInput, LinearLayout.LayoutParams(-1, dp(60)))
-            addView(sshPortInput, LinearLayout.LayoutParams(-1, dp(60)))
             addView(sshUsernameInput, LinearLayout.LayoutParams(-1, dp(60)))
             addView(workspaceInput, LinearLayout.LayoutParams(-1, dp(60)))
-            addView(remotePortInput, LinearLayout.LayoutParams(-1, dp(60)))
-            addView(commandPrefixInput, LinearLayout.LayoutParams(-1, dp(60)))
             addView(TextView(this@MainActivity).apply {
                 text = getString(R.string.ssh_key)
                 secondaryTextStyle()
@@ -521,6 +562,18 @@ class MainActivity : AppCompatActivity() {
                 setPadding(0, dp(4), 0, dp(10))
             }, LinearLayout.LayoutParams(-1, -2))
         }
+
+        val advanced = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(sshPortInput, LinearLayout.LayoutParams(-1, dp(60)))
+            addView(remotePortInput, LinearLayout.LayoutParams(-1, dp(60)))
+            addView(commandPrefixInput, LinearLayout.LayoutParams(-1, dp(60)))
+        }
+        sshFields.addView(surface.button(getString(R.string.home_advanced_ssh)) {
+            advanced.visibility = if (advanced.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        })
+        sshFields.addView(advanced)
 
         form.addView(nameInput, LinearLayout.LayoutParams(-1, dp(60)))
         form.addView(TextView(this).apply {
@@ -545,7 +598,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
-        updateFields(if (existing?.kind == Kind.SSH) 1 else 0)
+        updateFields(kindSpinner.selectedItemPosition)
 
         val scroll = ScrollView(this).apply {
             addView(form)
@@ -575,8 +628,8 @@ class MainActivity : AppCompatActivity() {
                     kind == Kind.WEB && url == null -> urlInput.error = getString(R.string.invalid_url)
                     kind == Kind.SSH && host.isEmpty() -> sshHostInput.error = getString(R.string.invalid_ssh_host)
                     kind == Kind.SSH && sshUsername.isEmpty() -> sshUsernameInput.error = getString(R.string.invalid_ssh_username)
-                    kind == Kind.SSH && sshPort !in 1..65535 -> sshPortInput.error = getString(R.string.invalid_ssh_port)
-                    kind == Kind.SSH && remotePort !in 1..65535 -> remotePortInput.error = getString(R.string.invalid_remote_port)
+                    kind == Kind.SSH && sshPort !in 1..65535 -> { advanced.visibility = View.VISIBLE; sshPortInput.error = getString(R.string.invalid_ssh_port) }
+                    kind == Kind.SSH && remotePort !in 1..65535 -> { advanced.visibility = View.VISIBLE; remotePortInput.error = getString(R.string.invalid_remote_port) }
                     else -> {
                         store.upsert(
                             Connection(

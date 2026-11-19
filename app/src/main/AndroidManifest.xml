@@ -51,6 +51,14 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".ProjectFilesActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|density|fontScale|layoutDirection|touchscreen|uiMode"
+            android:documentLaunchMode="always"
+            android:exported="false"
+            android:label="@string/project_files"
+            android:resizeableActivity="true" />
+
+        <activity
             android:name=".PortActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|density|fontScale|layoutDirection|touchscreen|uiMode"
             android:documentLaunchMode="always"
@@ -58,5 +66,10 @@
             android:launchMode="standard"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
+        <provider
+            android:name=".RemoteFileProvider"
+            android:authorities="${applicationId}.remote-files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

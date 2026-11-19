@@ -46,12 +46,8 @@ class WorkspaceMenu(private val activity: AppCompatActivity, private val dark: B
             setBackgroundDrawable(shape(surface,line,16))
             inputMethodMode=PopupWindow.INPUT_METHOD_NOT_NEEDED
         }
-        content.addView(text(activity.getString(R.string.header_workspace_label),10f,muted).apply {
-            visibility=if(compact)View.GONE else View.VISIBLE
-            letterSpacing=.12f; setTypeface(null,Typeface.BOLD); setPadding(activity.dp(8),activity.dp(2),0,activity.dp(6))
-        })
         content.addView(text(title,16f,ink).apply {setTypeface(null,Typeface.BOLD);setPadding(activity.dp(8),0,activity.dp(8),activity.dp(4))})
-        content.addView(text(subtitle,11f,muted).apply {visibility=if(compact)View.GONE else View.VISIBLE;setPadding(activity.dp(8),0,activity.dp(8),activity.dp(12))})
+        content.addView(text(subtitle,11f,muted).apply {visibility=if(compact || subtitle.isBlank())View.GONE else View.VISIBLE;setPadding(activity.dp(8),0,activity.dp(8),activity.dp(8))})
         fun activate(action: Action, update: () -> Unit = {}) {
             if(action.closeOnClick) popup.dismiss()
             action.run(); update()
@@ -71,11 +67,11 @@ class WorkspaceMenu(private val activity: AppCompatActivity, private val dark: B
             if(!compact)action.hint?.let{tile.addView(text(it,10f,muted).apply{setPadding(0,activity.dp(3),0,0)})}
             shortcuts.addView(tile,LinearLayout.LayoutParams(0,activity.dp(if(compact)56 else 88),1f).apply {if(index>0)leftMargin=activity.dp(8)})
         }
-        content.addView(shortcuts)
+        if (quick.isNotEmpty()) content.addView(shortcuts)
         val list=LinearLayout(activity).apply {orientation=LinearLayout.VERTICAL}
         sections.filter{it.actions.isNotEmpty()}.forEach { section ->
             list.addView(View(activity).apply{setBackgroundColor(line)},LinearLayout.LayoutParams(-1,activity.dp(1)).apply{topMargin=activity.dp(12);bottomMargin=activity.dp(10)})
-            list.addView(text(section.title,10f,muted).apply{letterSpacing=.08f;setTypeface(null,Typeface.BOLD);setPadding(activity.dp(8),0,0,activity.dp(6));androidx.core.view.ViewCompat.setAccessibilityHeading(this,true)})
+            if (section.title.isNotBlank()) list.addView(text(section.title,10f,muted).apply{letterSpacing=.08f;setTypeface(null,Typeface.BOLD);setPadding(activity.dp(8),0,0,activity.dp(6));androidx.core.view.ViewCompat.setAccessibilityHeading(this,true)})
             section.actions.forEach { action ->
                 val row=LinearLayout(activity).apply {
                     gravity=Gravity.CENTER_VERTICAL; setPadding(activity.dp(8),0,activity.dp(8),0)

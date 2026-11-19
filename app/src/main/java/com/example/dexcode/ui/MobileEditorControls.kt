@@ -355,7 +355,7 @@ class MobileEditorControls(private val activity: AppCompatActivity, private val 
             Triple(R.string.mobile_tab, HeaderIcon.FORWARD) { key(KeyEvent.KEYCODE_TAB, 0, "editor") },
             Triple(R.string.mobile_outdent, HeaderIcon.BACK) { key(KeyEvent.KEYCODE_TAB, KeyEvent.META_SHIFT_ON, "editor") },
             Triple(R.string.mobile_copy, HeaderIcon.COPY) { key(KeyEvent.KEYCODE_C, KeyEvent.META_CTRL_ON, "read") },
-            Triple(R.string.mobile_paste, HeaderIcon.COPY) { paste() },
+            Triple(R.string.mobile_paste, HeaderIcon.PASTE) { paste() },
             Triple(R.string.mobile_select_all, HeaderIcon.SELECT_TEXT) { key(KeyEvent.KEYCODE_A, KeyEvent.META_CTRL_ON, "read") },
             Triple(R.string.mobile_escape, HeaderIcon.CLOSE) { key(KeyEvent.KEYCODE_ESCAPE) }
         )

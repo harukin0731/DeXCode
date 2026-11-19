@@ -37,7 +37,11 @@ class SshSessionManager(
     var forwardingRestoreErrors: List<String> = emptyList()
         private set
 
-    fun connect(): Int {
+    fun connectFiles() { connect(prepareEditor = false) }
+
+    fun connect(): Int = connect(prepareEditor = true)
+
+    private fun connect(prepareEditor: Boolean): Int {
         check(session == null) { "SSH session is already connected" }
         check(!closed) { "SSH session is closed" }
         interaction.status("Connecting to ${connection.sshHost}:${connection.sshPort}")
@@ -76,6 +80,8 @@ class SshSessionManager(
             sshSession.connect(15_000)
             saveNewHostKey(jsch, sshSession)
             check(!closed) { "SSH session is closed" }
+
+            if (!prepareEditor) return 0
 
             val remotePort = connection.remotePort
             interaction.status("Preparing the remote VS Code server")
@@ -225,6 +231,27 @@ class SshSessionManager(
         val known = jsch.hostKeyRepository.getHostKey(connection.sshHost, null)
         if (known.isNullOrEmpty()) {
             jsch.hostKeyRepository.add(sshSession.hostKey, null)
+        }
+    }
+
+    internal fun openSftp(): com.jcraft.jsch.ChannelSftp {
+        val ssh = checkNotNull(session?.takeIf { connected }) { "SSH is disconnected" }
+        val channel = ssh.openChannel("sftp") as com.jcraft.jsch.ChannelSftp
+        try {
+            channel.connect(15_000)
+            return channel
+        } catch (error: Exception) {
+            channel.disconnect()
+            throw error
+        }
+    }
+
+    fun <T> withSftp(action: (com.jcraft.jsch.ChannelSftp) -> T): T {
+        val channel = openSftp()
+        try {
+            return action(channel)
+        } finally {
+            channel.disconnect()
         }
     }
 

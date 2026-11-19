@@ -37,7 +37,6 @@ import androidx.appcompat.widget.Toolbar
 import com.example.dexcode.data.Connection
 import com.example.dexcode.data.ConnectionStore
 import com.example.dexcode.data.Kind
-import com.example.dexcode.data.SecureSecretStore
 import com.example.dexcode.ssh.SshSessionManager
 import com.example.dexcode.util.dp
 import com.example.dexcode.util.copyForwardUrl
@@ -45,7 +44,6 @@ import com.example.dexcode.runtime.RuntimeTracker
 import com.example.dexcode.data.PortBindings
 import androidx.core.widget.doAfterTextChanged
 import android.widget.ScrollView
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 
 /** Connects to a remote workspace, bootstraps code-server, and exposes it through SSH. */
@@ -66,7 +64,7 @@ class SshCodeActivity : AppCompatActivity() {
     private var localWebPort: Int? = null
     private var initialPath: String? = null
     private var restoreAfterServerRestart: String? = null
-    private val secretStore by lazy { SecureSecretStore(applicationContext) }
+    private val sshPrompts by lazy { SshPrompts(this, connection.id) }
 
     private val filePicker = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -150,6 +148,7 @@ class SshCodeActivity : AppCompatActivity() {
             onReconnect = { startSshConnection() },
             onReload = { webView.reload() },
             onSettings = { AlertDialog.Builder(this).setTitle(R.string.settings).setMessage(R.string.webview_storage_info).setPositiveButton(android.R.string.ok, null).show() },
+            onProjectFiles = { showProjectFiles() },
             onServerManagement = { showServerManagement() },
         ) { webView }
 
@@ -192,12 +191,12 @@ class SshCodeActivity : AppCompatActivity() {
                 }
 
                 override fun confirmHostKey(message: String): Boolean =
-                    blockingHostKeyConfirmation(message)
+                    sshPrompts.confirmHostKey(message)
 
                 override fun askSecret(
                     kind: SshSessionManager.SecretKind,
                     prompt: String?,
-                ): String? = blockingSecret(kind, prompt)
+                ): String? = sshPrompts.askSecret(kind, prompt)
             },
             windowId = RuntimeTracker.id(this),
         )
@@ -244,6 +243,21 @@ class SshCodeActivity : AppCompatActivity() {
         }
     }
 
+    private fun showProjectFiles() {
+        val current = manager?.takeIf { it.connected }
+        if (current == null) {
+            Toast.makeText(this, R.string.server_connect_first, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val page = Uri.parse(webView.url.orEmpty())
+        val port = localWebPort
+        val project = if (port != null && page.scheme == "http" && page.host == "127.0.0.1" && page.port == port) {
+            page.getQueryParameter("folder")?.takeIf { it.startsWith("/") }
+                ?: page.getQueryParameter("workspace")?.takeIf { it.startsWith("/") }?.substringBeforeLast('/')?.ifEmpty { "/" }
+        } else null
+        ProjectFilesActivity.open(this, connection.id, project ?: current.resolvedWorkspacePath)
+    }
+
     private fun showServerManagement() {
         val current=manager?.takeIf{it.connected}
         if(current==null){Toast.makeText(this,R.string.server_connect_first,Toast.LENGTH_SHORT).show();return}
@@ -251,112 +265,6 @@ class SshCodeActivity : AppCompatActivity() {
             restoreAfterServerRestart=webView.url
             startSshConnection()
         }.show()
-    }
-
-    private fun blockingHostKeyConfirmation(message: String): Boolean {
-        if (isFinishing) return false
-        val latch = CountDownLatch(1)
-        var answer = false
-        runOnUiThread {
-            if (isFinishing) {
-                latch.countDown()
-                return@runOnUiThread
-            }
-            val dialog = AlertDialog.Builder(this)
-                .setTitle(R.string.host_key_title)
-                .setMessage(getString(R.string.host_key_message_with_details, getString(R.string.host_key_message), message))
-                .setNegativeButton(R.string.cancel) { _, _ -> latch.countDown() }
-                .setPositiveButton(android.R.string.ok) { _, _ ->
-                    answer = true
-                    latch.countDown()
-                }
-                .create()
-            dialog.setOnCancelListener { latch.countDown() }
-            dialog.show()
-        }
-        latch.await()
-        return answer
-    }
-
-    private fun blockingSecret(
-        kind: SshSessionManager.SecretKind,
-        prompt: String?,
-    ): String? {
-        if (isFinishing) return null
-        val isPassword = kind == SshSessionManager.SecretKind.PASSWORD
-        val rememberedPassword = if (isPassword) {
-            secretStore.getPassword(connection.id)
-        } else {
-            null
-        }
-        val input = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setSingleLine(true)
-            // setSingleLine replaces the transformation, so masking must be applied last.
-            transformationMethod = SecretMask
-            isSaveEnabled = false
-            imeOptions = imeOptions or android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
-            if (rememberedPassword != null) {
-                setText(rememberedPassword)
-                setSelection(text.length)
-            }
-            hint = getString(
-                if (!isPassword) {
-                    R.string.ssh_passphrase
-                } else {
-                    R.string.ssh_password
-                },
-            )
-        }
-        val remember = CheckBox(this).apply {
-            text = getString(R.string.remember_ssh_password)
-            isChecked = rememberedPassword != null
-        }
-        val form = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(4), dp(22), 0)
-            addView(input, LinearLayout.LayoutParams(-1, dp(58)))
-            if (isPassword) addView(remember, LinearLayout.LayoutParams(-1, dp(48)))
-        }
-        val latch = CountDownLatch(1)
-        var answer: String? = null
-        runOnUiThread {
-            if (isFinishing) {
-                latch.countDown()
-                return@runOnUiThread
-            }
-            val builder = AlertDialog.Builder(this)
-                .setTitle(R.string.ssh_secret_title)
-                .setView(form)
-                .setNegativeButton(R.string.cancel) { _, _ -> latch.countDown() }
-                .setPositiveButton(android.R.string.ok) { _, _ ->
-                    answer = input.text.toString()
-                    if (isPassword) {
-                        if (remember.isChecked && !answer.isNullOrEmpty()) {
-                            secretStore.putPassword(connection.id, answer.orEmpty()).onFailure {
-                                Toast.makeText(
-                                    this@SshCodeActivity,
-                                    R.string.ssh_password_save_failed,
-                                    Toast.LENGTH_LONG,
-                                ).show()
-                            }
-                        } else if (!remember.isChecked || answer.isNullOrEmpty()) {
-                            secretStore.removePassword(connection.id)
-                        }
-                    }
-                    latch.countDown()
-                }
-            if (!prompt.isNullOrBlank()) {
-                builder.setMessage(prompt)
-            } else if (!isPassword) {
-                builder.setMessage(R.string.ssh_key_passphrase_note)
-            }
-            val dialog = builder.create()
-            dialog.setOnCancelListener { latch.countDown() }
-            dialog.show()
-        }
-        latch.await()
-        return answer
     }
 
     private fun createWebView(isPopup: Boolean = false): WebView {

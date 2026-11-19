@@ -9,7 +9,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.content.res.ColorStateList
-import android.widget.PopupMenu
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -46,6 +45,7 @@ class WorkspaceHeader(
     private val onReload: () -> Unit,
     private val onSettings: () -> Unit,
     private val onDiagnostics: (() -> Unit)? = null,
+    private val onProjectFiles: (() -> Unit)? = null,
     private val onServerManagement: (() -> Unit)? = null,
     private val editor: () -> WebView,
 ) : DefaultLifecycleObserver {
@@ -128,7 +128,7 @@ class WorkspaceHeader(
         row.addView(workspaces, LinearLayout.LayoutParams(0, -1, 1f).apply {rightMargin=activity.dp(8)})
         search = button(activity.getString(R.string.header_search), activity.getString(R.string.header_search_description)) {
             editorActions.run(EditorActions.Action.FILES)
-        }.apply { setOnLongClickListener { editorActions.run(EditorActions.Action.COMMANDS); true } }
+        }
         row.addView(search, LinearLayout.LayoutParams(activity.dp(220), activity.dp(34)))
         commandButton=iconButton(HeaderIcon.COMMAND, activity.getString(R.string.header_commands_description)) {
             editorActions.run(EditorActions.Action.COMMANDS)
@@ -141,7 +141,11 @@ class WorkspaceHeader(
         selectionButton = iconButton(HeaderIcon.SELECT_TEXT, activity.getString(R.string.terminal_selection_mode)) { toggleSelectionMode() }
         actions.addView(selectionButton, LinearLayout.LayoutParams(activity.dp(36), activity.dp(36)))
         actions.addView(status, LinearLayout.LayoutParams(activity.dp(76), activity.dp(32)))
-        more=iconButton(HeaderIcon.MORE, activity.getString(R.string.header_unified_menu)) { showStatus() }
+        more=iconButton(HeaderIcon.MORE, activity.getString(R.string.header_unified_menu)) { showWorkspaceMenu() }
+        onProjectFiles?.let { openFiles ->
+            actions.addView(iconButton(HeaderIcon.FOLDER, activity.getString(R.string.project_files)) { openFiles() },
+                LinearLayout.LayoutParams(activity.dp(36), activity.dp(36)))
+        }
         actions.addView(more, LinearLayout.LayoutParams(activity.dp(36), activity.dp(36)))
         row.addView(actions, LinearLayout.LayoutParams(-2, -1))
         toolbar.addView(row, Toolbar.LayoutParams(-1, -1))
@@ -156,6 +160,7 @@ class WorkspaceHeader(
                 if (view.layoutParams.width != activity.dp(width)) view.layoutParams = view.layoutParams.apply { this.width = activity.dp(width) }
             }
             resize(search, currentSizing.searchWidth); resize(status, currentSizing.statusWidth)
+            commandButton.visibility = if (currentSizing.compactSearch) View.GONE else View.VISIBLE
             home.visibility = if (currentSizing.showHome) View.VISIBLE else View.GONE
             add.visibility = if (currentSizing.showAdd) View.VISIBLE else View.GONE
             navigation.visibility = if (currentSizing.showNavigation) View.VISIBLE else View.GONE
@@ -344,69 +349,139 @@ class WorkspaceHeader(
         if (!moved) Toast.makeText(activity, R.string.header_window_unavailable, Toast.LENGTH_SHORT).show()
     }
 
-    private fun showStatus() {
-        fun label(id: Int) = activity.getString(id)
-        fun action(id: Int, icon: HeaderIcon, hint: String? = null, enabled: Boolean = true, run: () -> Unit) =
-            WorkspaceMenu.Action(label(id),icon,hint,enabled,run=run)
-        fun toggle(id: Int, icon: HeaderIcon, key: String, default: Boolean, run: () -> Unit) =
-            WorkspaceMenu.Action(label(id),icon,checked={preferences.getBoolean(key,default)},closeOnClick=false,run=run)
-        val ready=titlebarBridge.layoutReady
-        val sections=listOf(
-            WorkspaceMenu.Section(label(R.string.header_editor_menu),listOf(
-                action(R.string.header_primary_sidebar,HeaderIcon.SIDEBAR_LEFT,enabled=ready){titlebarBridge.clickLayout(HeaderIcon.SIDEBAR_LEFT)},
-                action(R.string.header_bottom_panel,HeaderIcon.PANEL,enabled=ready){titlebarBridge.clickLayout(HeaderIcon.PANEL)},
-                action(R.string.header_secondary_sidebar,HeaderIcon.SIDEBAR_RIGHT,enabled=ready){titlebarBridge.clickLayout(HeaderIcon.SIDEBAR_RIGHT)},
-                action(R.string.header_terminal,HeaderIcon.TERMINAL,enabled=ready){editorActions.run(EditorActions.Action.TERMINAL)},
-                toggle(R.string.header_selection_short,HeaderIcon.SELECT_TEXT,"terminal_selection_mode",false){toggleSelectionMode()},
-                action(R.string.copy_terminal_selection,HeaderIcon.COPY){clipboardControls.copyTerminalSelection()}
-            )),
-            WorkspaceMenu.Section(label(R.string.header_connection_menu),buildList {
-                onServerManagement?.let { add(action(R.string.server_management,HeaderIcon.PORT){it()}) }
-                addAll(listOf(
-                action(R.string.header_ports,HeaderIcon.PORT,activity.getString(R.string.header_forward_count,forwardCount)){onPorts()},
-                action(R.string.header_reconnect,HeaderIcon.RELOAD){onReconnect()},
-                action(R.string.reload,HeaderIcon.RELOAD){onReload()}
-                ))
-            }),
-            WorkspaceMenu.Section(label(R.string.header_window_menu),listOf(
-                action(R.string.new_window,HeaderIcon.ADD){newWindow()},
-                action(R.string.header_all_workspaces,HeaderIcon.WINDOW){showWorkspaces()},
-                action(R.string.connections,HeaderIcon.CONNECTIONS){connections()}
-            )),
-            WorkspaceMenu.Section(label(R.string.header_preferences),listOf(
-                WorkspaceMenu.Action(label(R.string.mobile_controls),HeaderIcon.TERMINAL,checked={mobileControls.visible},closeOnClick=false){mobileControls.toggle()},
-                action(R.string.mobile_automatic,HeaderIcon.SETTINGS){mobileControls.automatic()},
-                toggle(R.string.header_autocopy_short,HeaderIcon.COPY,"selection_copy",true){
-                    preferences.edit().putBoolean("selection_copy",!preferences.getBoolean("selection_copy",true)).apply();RuntimeState.store.changed()
-                },
-                toggle(R.string.header_merge_titlebar,HeaderIcon.WINDOW,"merge_titlebar",true){
-                    preferences.edit().putBoolean("merge_titlebar",!preferences.getBoolean("merge_titlebar",true)).apply();RuntimeState.store.changed()
-                },
-                WorkspaceMenu.Action(label(R.string.header_dark),HeaderIcon.THEME,checked={preferences.getBoolean("dark",true)}){
-                    preferences.edit().putBoolean("dark",!dark).apply();RuntimeState.store.changed()
-                },
-                action(R.string.settings,HeaderIcon.SETTINGS){onSettings()}
-            )),
-            WorkspaceMenu.Section(label(R.string.header_more_tools),buildList {
-                if(mirroredControls.isNotEmpty())add(action(R.string.header_vscode_controls,HeaderIcon.MORE){showVsControls()})
-                add(action(R.string.clipboard_diagnostics,HeaderIcon.INFO){clipboardControls.diagnostics()})
-                if(onDiagnostics!=null)add(action(R.string.connection_diagnostics,HeaderIcon.INFO){onDiagnostics.invoke()})
-                add(action(R.string.header_back,HeaderIcon.BACK){activity.onBackPressedDispatcher.onBackPressed()})
-                add(WorkspaceMenu.Action(label(R.string.header_close_workspace),HeaderIcon.CLOSE,destructive=true){activity.finishAndRemoveTask()})
-            })
+    private fun menuAction(id: Int, icon: HeaderIcon, hint: String? = null, enabled: Boolean = true, run: () -> Unit) =
+        WorkspaceMenu.Action(activity.getString(id), icon, hint, enabled, run = run)
+
+    private fun menuToggle(id: Int, icon: HeaderIcon, key: String, default: Boolean, run: () -> Unit) =
+        WorkspaceMenu.Action(activity.getString(id), icon, checked = { preferences.getBoolean(key, default) },
+            closeOnClick = false, run = run)
+
+    private fun showMenu(anchor: View, title: String, sections: List<WorkspaceMenu.Section>, subtitle: String = "") {
+        WorkspaceMenu(activity, dark).show(
+            anchor, root.width, root.height - root.paddingTop - root.paddingBottom - toolbar.height,
+            title, subtitle, emptyList(), sections,
         )
-        WorkspaceMenu(activity,dark).show(more,root.width,root.height-root.paddingTop-root.paddingBottom-toolbar.height,currentWorkspaceTitle,
-            lastPhase+" · "+activity.getString(R.string.header_forward_count,forwardCount),
-            listOf(action(R.string.header_file_search,HeaderIcon.SEARCH,"Ctrl+P",ready){editorActions.run(EditorActions.Action.FILES)},
-                action(R.string.header_command_palette,HeaderIcon.COMMAND,"Ctrl+Shift+P",ready){editorActions.run(EditorActions.Action.COMMANDS)}),sections)
     }
 
-    private fun showVsControls() {
-        val controls=mirroredControls.toList()
-        val popup=PopupMenu(activity,more)
-        controls.forEachIndexed {index,control->popup.menu.add(0,index,index,control.label).isEnabled=control.enabled}
-        popup.setOnMenuItemClickListener {item->controls.getOrNull(item.itemId)?.let{titlebarBridge.click(it)};true}
-        popup.show()
+    private fun section(title: Int, actions: List<WorkspaceMenu.Action>) =
+        WorkspaceMenu.Section(activity.getString(title), actions)
+
+    private fun showWorkspaceMenu() {
+        val ready = titlebarBridge.layoutReady
+        val editorItems = buildList {
+            if (commandButton.visibility != View.VISIBLE) {
+                add(menuAction(R.string.header_command_palette, HeaderIcon.COMMAND, "Ctrl+Shift+P", ready) {
+                    editorActions.run(EditorActions.Action.COMMANDS)
+                })
+            }
+            add(menuAction(R.string.header_terminal, HeaderIcon.TERMINAL, enabled = ready) {
+                editorActions.run(EditorActions.Action.TERMINAL)
+            })
+            if (!currentSizing.showPanels || !currentSizing.showNavigation || extraControls().isNotEmpty()) {
+                add(menuAction(R.string.header_vscode_controls, HeaderIcon.PANEL) { showEditorControls() })
+            }
+        }
+        val windowItems = buildList {
+            if (!currentSizing.showHome) add(menuAction(R.string.connections, HeaderIcon.CONNECTIONS) { connections() })
+            if (!currentSizing.showAdd) add(menuAction(R.string.new_window, HeaderIcon.ADD) { newWindow() })
+            add(WorkspaceMenu.Action(activity.getString(R.string.header_close_workspace), HeaderIcon.CLOSE, destructive = true) {
+                activity.finishAndRemoveTask()
+            })
+        }
+        val tools = buildList {
+            if (status.visibility != View.VISIBLE) {
+                add(menuAction(R.string.header_connection_menu, HeaderIcon.STATUS) { showStatus(more) })
+            }
+            add(menuAction(R.string.header_preferences, HeaderIcon.SETTINGS) { showPreferences() })
+        }
+        showMenu(more, currentWorkspaceTitle, listOf(
+            section(R.string.header_editor_menu, editorItems),
+            section(R.string.header_more_tools, tools),
+            section(R.string.header_window_menu, windowItems),
+        ))
+    }
+
+    private fun showStatus(anchor: View = status) {
+        val actions = buildList {
+            add(menuAction(R.string.header_ports, HeaderIcon.PORT, activity.getString(R.string.header_forward_count, forwardCount)) { onPorts() })
+            onServerManagement?.let { manage ->
+                add(menuAction(R.string.server_management, HeaderIcon.TERMINAL, run = manage))
+            }
+            add(menuAction(R.string.header_reconnect, HeaderIcon.CONNECTIONS) { onReconnect() })
+            add(menuAction(R.string.reload, HeaderIcon.RELOAD) { onReload() })
+            onDiagnostics?.let { diagnose ->
+                add(menuAction(R.string.connection_diagnostics, HeaderIcon.INFO, run = diagnose))
+            }
+        }
+        showMenu(anchor, activity.getString(R.string.header_connection_menu),
+            listOf(WorkspaceMenu.Section("", actions)), lastPhase)
+    }
+
+    private fun extraControls() = mirroredControls
+        .filter { HeaderActions.icon(it.icon) !in actionButtons.keys }
+        .distinctBy { it.label.trim().lowercase() }
+
+    private fun showEditorControls() {
+        val ready = titlebarBridge.layoutReady
+        val layout = buildList {
+            if (!currentSizing.showPanels) {
+                add(menuAction(R.string.header_primary_sidebar, HeaderIcon.SIDEBAR_LEFT, enabled = ready) {
+                    titlebarBridge.clickLayout(HeaderIcon.SIDEBAR_LEFT)
+                })
+                add(menuAction(R.string.header_bottom_panel, HeaderIcon.PANEL, enabled = ready) {
+                    titlebarBridge.clickLayout(HeaderIcon.PANEL)
+                })
+                add(menuAction(R.string.header_secondary_sidebar, HeaderIcon.SIDEBAR_RIGHT, enabled = ready) {
+                    titlebarBridge.clickLayout(HeaderIcon.SIDEBAR_RIGHT)
+                })
+            }
+            if (!currentSizing.showNavigation) {
+                for (icon in listOf(HeaderIcon.BACK, HeaderIcon.FORWARD)) {
+                    val control = mirroredControls.firstOrNull { HeaderActions.icon(it.icon) == icon } ?: continue
+                    add(WorkspaceMenu.Action(iconLabel(icon), icon, enabled = control.enabled) { titlebarBridge.click(control) })
+                }
+            }
+        }
+        val additional = extraControls().map { control ->
+            WorkspaceMenu.Action(control.label, HeaderIcon.MORE, enabled = control.enabled) { titlebarBridge.click(control) }
+        }
+        showMenu(more, activity.getString(R.string.header_vscode_controls),
+            listOf(WorkspaceMenu.Section("", layout + additional)))
+    }
+
+    private fun showPreferences() {
+        val appearance = listOf(
+            WorkspaceMenu.Action(activity.getString(R.string.header_dark), HeaderIcon.THEME,
+                checked = { preferences.getBoolean("dark", true) }) {
+                preferences.edit().putBoolean("dark", !dark).apply()
+                RuntimeState.store.changed()
+            },
+            menuToggle(R.string.header_merge_titlebar, HeaderIcon.WINDOW, "merge_titlebar", true) {
+                preferences.edit().putBoolean("merge_titlebar", !preferences.getBoolean("merge_titlebar", true)).apply()
+                RuntimeState.store.changed()
+            },
+        )
+        val input = buildList {
+            add(WorkspaceMenu.Action(activity.getString(R.string.mobile_controls), HeaderIcon.KEYBOARD,
+                checked = { mobileControls.visible }, closeOnClick = false) { mobileControls.toggle() })
+            add(menuAction(R.string.mobile_automatic, HeaderIcon.SETTINGS) { mobileControls.automatic() })
+            if (!currentSizing.showSelection) {
+                add(menuToggle(R.string.header_selection_short, HeaderIcon.SELECT_TEXT, "terminal_selection_mode", false) {
+                    toggleSelectionMode()
+                })
+            }
+            add(menuToggle(R.string.header_autocopy_short, HeaderIcon.COPY, "selection_copy", true) {
+                preferences.edit().putBoolean("selection_copy", !preferences.getBoolean("selection_copy", true)).apply()
+                RuntimeState.store.changed()
+            })
+            add(menuAction(R.string.copy_terminal_selection, HeaderIcon.COPY) { clipboardControls.copyTerminalSelection() })
+            add(menuAction(R.string.clipboard_diagnostics, HeaderIcon.INFO) { clipboardControls.diagnostics() })
+        }
+        showMenu(more, activity.getString(R.string.header_preferences), listOf(
+            section(R.string.header_appearance_menu, appearance),
+            section(R.string.header_input_menu, input),
+            WorkspaceMenu.Section("", listOf(menuAction(R.string.settings, HeaderIcon.SETTINGS) { onSettings() })),
+        ))
     }
 
     private fun updateStatus() {
@@ -427,7 +502,7 @@ class WorkspaceHeader(
             status.compoundDrawablePadding = if (compactStatus) 0 else activity.dp(2)
             status.setTextColor(color)
         }
-        status.contentDescription = "$lastPhase · ${activity.getString(R.string.header_forward_count, forwardCount)}"
+        status.contentDescription = "${activity.getString(R.string.header_connection_menu)} · $lastPhase · ${activity.getString(R.string.header_forward_count, forwardCount)}"
         status.tooltipText = status.contentDescription
     }
 

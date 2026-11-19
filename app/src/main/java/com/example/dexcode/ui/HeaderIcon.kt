@@ -9,7 +9,7 @@ import android.graphics.RectF
 import android.graphics.drawable.Drawable
 
 /** Small stroke icons independent of font glyph coverage or baseline. */
-enum class HeaderIcon { CONNECTIONS, WORKSPACES, ADD, SEARCH, BACK, FORWARD, SIDEBAR_LEFT, PANEL, SIDEBAR_RIGHT, SELECT_TEXT, MORE, STATUS, COMMAND, TERMINAL, PORT, RELOAD, SETTINGS, CLOSE, COPY, WINDOW, THEME, INFO, KEYBOARD, SAVE, UNDO, REDO, CURSOR, UP, DOWN }
+enum class HeaderIcon { CONNECTIONS, WORKSPACES, ADD, SEARCH, BACK, FORWARD, SIDEBAR_LEFT, PANEL, SIDEBAR_RIGHT, SELECT_TEXT, MORE, STATUS, COMMAND, TERMINAL, PORT, RELOAD, SETTINGS, CLOSE, COPY, WINDOW, THEME, INFO, KEYBOARD, SAVE, UNDO, REDO, CURSOR, UP, DOWN, FILE, FOLDER, PASTE, EDIT }
 
 class HeaderIconDrawable(private val icon: HeaderIcon, private val color: Int, private val pixels: Int) : Drawable() {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.7f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
@@ -52,6 +52,19 @@ class HeaderIconDrawable(private val icon: HeaderIcon, private val color: Int, p
             HeaderIcon.DOWN -> {path(5f,13f,12f,20f,19f,13f);line(12f,3f,12f,20f)}
             HeaderIcon.COMMAND -> { path(4f,7f,9f,12f,4f,17f); line(12f,17f,20f,17f) }
             HeaderIcon.TERMINAL -> { canvas.drawRoundRect(RectF(2f,4f,22f,20f),2f,2f,paint); path(6f,9f,10f,12f,6f,15f); line(13f,16f,18f,16f) }
+            HeaderIcon.FOLDER -> path(3f,6f,9f,6f,11f,8f,21f,8f,21f,19f,3f,19f,3f,6f)
+            HeaderIcon.EDIT -> path(5f,16f,16f,5f,20f,9f,9f,20f,4f,21f,5f,16f)
+            HeaderIcon.PASTE -> {
+                path(8f,5f,5f,5f,5f,21f,19f,21f,19f,5f,16f,5f)
+                canvas.drawRoundRect(RectF(8f,3f,16f,8f),2f,2f,paint)
+                line(9f,12f,15f,12f)
+                line(9f,16f,15f,16f)
+            }
+            HeaderIcon.FILE -> {
+                line(6f, 3f, 14f, 3f); line(14f, 3f, 19f, 8f); line(19f, 8f, 19f, 21f)
+                line(19f, 21f, 6f, 21f); line(6f, 21f, 6f, 3f)
+                line(14f, 3f, 14f, 8f); line(14f, 8f, 19f, 8f)
+            }
             HeaderIcon.PORT -> { canvas.drawRoundRect(RectF(3f,4f,21f,10f),2f,2f,paint); canvas.drawRoundRect(RectF(3f,14f,21f,20f),2f,2f,paint); line(7f,7f,7.1f,7f); line(7f,17f,7.1f,17f) }
             HeaderIcon.RELOAD -> { canvas.drawArc(RectF(4f,4f,20f,20f),-45f,285f,false,paint); path(20f,4f,20f,10f,14f,10f) }
             HeaderIcon.SETTINGS -> { canvas.drawCircle(12f,12f,4f,paint); for(i in 0..7){val a=i*Math.PI/4;line((12+7*kotlin.math.cos(a)).toFloat(),(12+7*kotlin.math.sin(a)).toFloat(),(12+10*kotlin.math.cos(a)).toFloat(),(12+10*kotlin.math.sin(a)).toFloat())} }
